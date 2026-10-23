@@ -54,6 +54,9 @@ public class ExceptionHandlerAdvice extends ResponseEntityExceptionHandler imple
     @Autowired
     MessageSource messageSource;
 
+    @org.springframework.beans.factory.annotation.Value("${mosip.certify.integration.data-provider-plugin:}")
+    private String selectedDataProvider;
+
     @Override
     protected ResponseEntity<Object> handleHttpMessageNotReadable(HttpMessageNotReadableException ex, HttpHeaders headers,
                                                                   HttpStatusCode status, WebRequest request) {
@@ -91,7 +94,23 @@ public class ExceptionHandlerAdvice extends ResponseEntityExceptionHandler imple
 
     @ExceptionHandler(value = { Exception.class, RuntimeException.class, MissingRequestHeaderException.class })
     public ResponseEntity handleExceptions(Exception ex, WebRequest request) {
-        log.error("Unhandled exception encountered in handler advice", ex);
+        String requestPath = ((ServletWebRequest) request).getRequest().getRequestURI();
+        if ("RouterDataProviderPlugin".equals(selectedDataProvider) && requestPath.endsWith("/pre-authorized-data")
+                && (ex instanceof MethodArgumentNotValidException || ex instanceof HttpMessageNotReadableException
+                || ex instanceof InvalidRequestException)) {
+            return ResponseEntity.badRequest().body(Map.of("error", "invalid_request"));
+        }
+        if ("RouterDataProviderPlugin".equals(selectedDataProvider)
+                && (ex instanceof org.springframework.dao.DataAccessException || ex instanceof org.springframework.transaction.TransactionException)) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(Map.of("error", "temporarily_unavailable"));
+        }
+        if (ex instanceof io.mosip.certify.api.exception.LookupValidationException) {
+            return ResponseEntity.badRequest().body(Map.of("error", "invalid_request", "error_description", ex.getMessage()));
+        }
+        if (ex instanceof CertifyException certifyException && "erl_datasource_unavailable".equals(certifyException.getErrorCode())) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(Map.of("error", "temporarily_unavailable"));
+        }
+        log.error("Request failed: {}", ex.getClass().getSimpleName());
         String pathInfo = ((ServletWebRequest)request).getRequest().getPathInfo();
 
         if(pathInfo != null && pathInfo.startsWith("/issuance/")) {

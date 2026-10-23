@@ -10,6 +10,9 @@ import org.springframework.cache.Cache;
 import org.springframework.cache.CacheManager;
 import org.springframework.cache.annotation.CachePut;
 import org.springframework.data.redis.cache.RedisCache;
+import org.springframework.data.redis.connection.RedisConnectionFactory;
+import org.springframework.data.redis.cache.RedisCacheConfiguration;
+import java.nio.ByteBuffer;
 import org.springframework.stereotype.Service;
 
 @Slf4j
@@ -18,6 +21,9 @@ public class VCICacheService {
 
     @Autowired
     private CacheManager cacheManager;
+
+    @Autowired(required = false)
+    private RedisConnectionFactory redisConnectionFactory;
 
     @Value("${spring.cache.type:simple}")
     private String cacheType;
@@ -112,6 +118,21 @@ public class VCICacheService {
     }
 
     public boolean claimPreAuthCode(String preAuthCode) {
+        Cache cache = cacheManager.getCache("preAuthCodeCache");
+        if (cache instanceof RedisCache redisCache) {
+            if (redisConnectionFactory == null) throw new IllegalStateException("Redis connection is required");
+            RedisCacheConfiguration config = redisCache.getCacheConfiguration();
+            String key = Constants.PRE_AUTH_CODE_PREFIX + preAuthCode;
+            if (config.usePrefix()) key = config.getKeyPrefixFor(redisCache.getName()) + key;
+            ByteBuffer serializedKey = config.getKeySerializationPair().write(key);
+            byte[] binaryKey = new byte[serializedKey.remaining()];
+            serializedKey.get(binaryKey);
+            try (var connection = redisConnectionFactory.getConnection()) {
+                byte[] value = connection.stringCommands().getDel(binaryKey);
+                return value != null && config.getValueSerializationPair().read(ByteBuffer.wrap(value)) instanceof PreAuthCodeData;
+            }
+        }
+        if (!"simple".equalsIgnoreCase(cacheType)) throw new IllegalStateException("Atomic pre-auth consumption requires Redis or simple cache");
         synchronized (this) {
             PreAuthCodeData codeData = getPreAuthCodeData(preAuthCode);
             if (codeData == null || isPreAuthCodeUsed(preAuthCode)) {

@@ -1,0 +1,25 @@
+{{- if and .Values.istio.enabled .Values.preAuth.internalOnly }}
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ include "common.names.fullname" . }}-internal-preauth
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    matchLabels: {{- include "common.labels.matchLabels" . | nindent 6 }}
+  action: DENY
+  rules:
+    - to:
+        - operation:
+            paths:
+              - "/v1/certify/pre-authorized-data"
+              - "/v1/certify/pre-authorized-data/*"
+      {{- if .Values.preAuth.allowedPrincipals }}
+      from:
+        - source:
+            notPrincipals:
+              {{- range .Values.preAuth.allowedPrincipals }}
+              - {{ . | quote }}
+              {{- end }}
+      {{- end }}
+{{- end }}
