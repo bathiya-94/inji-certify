@@ -1694,7 +1694,15 @@ paths:
       tags:
         - Pre-Authorized Code
       summary: Pre-Authorized Verifiable Credential data generation
-      description: Inji Certify's pre-authorized api to generate verifiable credential data
+      description: >-
+        Internal offer creation. Router deployments require a service JWT with the
+        certify:preauth:create scope and an allowed client_id for the credential.
+        The credential configuration selects the current backend provider; claims are
+        retrieval inputs and can differ from the final credential fields. ERL requires
+        exactly vehicle_number and issued_date, with no provider or wrapper fields.
+        Legacy complete-claims deployments retain their configured behavior.
+      security:
+        - internalServiceBearer: []
       operationId: generatePreAuthorizedCode
       requestBody:
         required: true
@@ -1703,6 +1711,14 @@ paths:
             schema:
               $ref: '#/components/schemas/PreAuthorizedRequest'
             examples:
+              ERL lookup:
+                value:
+                  credential_configuration_id: ERLCredential
+                  claims:
+                    vehicle_number: WP-ABC-1234
+                    issued_date: "2026-10-16T14:30:00"
+                  expires_in: 600
+                  tx_code: "482913"
               with tx_code example:
                 value:
                   credential_configuration_id: "MockVerifiableCredential"
@@ -1725,9 +1741,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PreAuthorizedResponse'
+        '400':
+          description: Invalid lookup fields or missing/invalid route
+        '401':
+          description: Missing or invalid internal service JWT
+        '403':
+          description: Caller is not authorized, or public offer creation is denied
       servers:
-        - url: 'http://localhost:8090/v1/certify'
-          description: Generated server url
+        - url: 'https://certify.internal.example/v1/certify'
+          description: Internal service URL; offers contain the public issuer URL
   /credential-offer-data/{offer_id}:
     get:
       tags:
@@ -1776,6 +1798,12 @@ tags:
     description: Operation to create pre-authorize data and get credential offer
 
 components:
+  securitySchemes:
+    internalServiceBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Internal service identity with certify:preauth:create scope and per-credential client allowlist.
   schemas:
     CredentialConfigurationDTO:
       type: object
@@ -3039,7 +3067,7 @@ components:
           type: string
         claims:
           type: object
-          description: claims to be issued for verifiable credential
+          description: Plugin-specific flat lookup inputs in router deployments; final credential claims in legacy pre-auth deployments.
           additionalProperties: true
         expires_in:
           type: integer

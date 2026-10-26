@@ -11,6 +11,7 @@ import io.mosip.certify.api.dto.VCResult;
 import io.mosip.certify.api.exception.DataProviderExchangeException;
 import io.mosip.certify.api.spi.AuditPlugin;
 import io.mosip.certify.api.spi.DataProviderPlugin;
+import io.mosip.certify.api.spi.LookupDataProviderPlugin;
 import io.mosip.certify.api.util.Action;
 import io.mosip.certify.api.util.ActionStatus;
 import io.mosip.certify.api.util.AuditHelper;
@@ -165,6 +166,11 @@ public class CertifyIssuanceServiceImpl implements VCIssuanceService {
             throw new CertifyException(VCIErrorConstants.INVALID_SCOPE, "No credential mapping found for the provided scope.");
         }
 
+        if (dataProviderPlugin instanceof LookupDataProviderPlugin) {
+            TrustedLookupInput.fromTransaction(credentialMetadata.getId(),
+                    vciCacheService.getVCITransaction(parsedAccessToken.getAccessTokenHash()));
+        }
+
         // 3. Proof Validation
         ProofValidator proofValidator = proofValidatorFactory.getProofValidator(credentialRequest.getProof().getProof_type());
         String validCNonce = VCIssuanceUtil.getValidClientNonce(vciCacheService, parsedAccessToken, cNonceExpireSeconds, securityHelperService, log);
@@ -190,13 +196,17 @@ public class CertifyIssuanceServiceImpl implements VCIssuanceService {
     }
 
     private VCResult<?> getVerifiableCredential(CredentialRequest credentialRequest, CredentialMetadata credentialMetadata, String holderId) {
-        parsedAccessToken.getClaims().put("accessTokenHash", parsedAccessToken.getAccessTokenHash());
+        Map<String, Object> providerInput = dataProviderPlugin instanceof LookupDataProviderPlugin
+                ? new HashMap<>(TrustedLookupInput.fromTransaction(credentialMetadata.getId(),
+                    vciCacheService.getVCITransaction(parsedAccessToken.getAccessTokenHash())))
+                : parsedAccessToken.getClaims();
+        providerInput.put("accessTokenHash", parsedAccessToken.getAccessTokenHash());
         VCRequestDto vcRequestDto = new VCRequestDto();
         vcRequestDto.setFormat(credentialRequest.getFormat());
 
         try {
             // Fetch data once, as it's common to all formats
-            JSONObject jsonObject = dataProviderPlugin.fetchData(parsedAccessToken.getClaims());
+            JSONObject jsonObject = dataProviderPlugin.fetchData(providerInput);
             log.info("Data fetched successfully from Data Provider Plugin");
 
             String templateName;
@@ -266,6 +276,9 @@ public class CertifyIssuanceServiceImpl implements VCIssuanceService {
             String expiryTime = zonedDateTime.plus(duration).format(DateTimeFormatter.ofPattern(Constants.UTC_DATETIME_PATTERN));
             templateParams.put(VCDM2Constants.VALID_FROM, time);
             templateParams.put(VCDM2Constants.VALID_UNTIL, expiryTime);
+            if (dataProviderPlugin instanceof LookupDataProviderPlugin lookupProvider) {
+                lookupProvider.customizeTemplate(providerInput, templateParams);
+            }
 
             Credential cred = credentialFactory.getCredential(format).orElseThrow(() -> new CertifyException(VCIErrorConstants.UNSUPPORTED_CREDENTIAL_FORMAT));
             Map<String, Object> updatedTemplateParams = toJsonMap(templateParams);

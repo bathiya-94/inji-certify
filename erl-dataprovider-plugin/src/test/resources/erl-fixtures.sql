@@ -1,0 +1,13 @@
+CREATE TABLE lcn_owner (id BIGINT UNSIGNED PRIMARY KEY, name TEXT, address_line_1 TEXT, address_line_2 TEXT, city VARCHAR(100));
+CREATE TRIGGER lcn_owner_before_insert BEFORE INSERT ON lcn_owner FOR EACH ROW SET NEW.name=TO_BASE64(NEW.name), NEW.address_line_1=TO_BASE64(NEW.address_line_1), NEW.address_line_2=TO_BASE64(NEW.address_line_2);
+CREATE TABLE lcn_vehicle_class (id BIGINT UNSIGNED PRIMARY KEY, name VARCHAR(100));
+CREATE TABLE lcn_fuel_type (id BIGINT UNSIGNED PRIMARY KEY, name VARCHAR(100));
+CREATE TABLE lcn_vehicle (id BIGINT UNSIGNED PRIMARY KEY, vehicle_class_id BIGINT UNSIGNED, fuel_type_id BIGINT UNSIGNED, gross_weight DECIMAL(12,2));
+CREATE TABLE lcn_licence (id BIGINT UNSIGNED PRIMARY KEY, licence_number VARCHAR(100), vehicle_number VARCHAR(50), vehicle_id BIGINT UNSIGNED, owner_id BIGINT UNSIGNED, valid_from DATE, valid_to DATE, issued_at DATETIME(0), deleted_at DATETIME);
+CREATE TABLE lcn_licence_charge (id BIGINT UNSIGNED PRIMARY KEY, licence_id BIGINT UNSIGNED, charge_type_code VARCHAR(50), amount DECIMAL(10,2), created_at DATETIME, deleted_at DATETIME);
+INSERT INTO lcn_owner VALUES (1, 'Test owner සිංහල', 'First line', '', 'Colombo');
+INSERT INTO lcn_vehicle_class VALUES (1,'Motor car');
+INSERT INTO lcn_fuel_type VALUES (1,'Petrol');
+INSERT INTO lcn_vehicle VALUES (1,1,1,1234.56);
+INSERT INTO lcn_licence VALUES (1,'OLD','TEST',1,1,'2026-01-01','2099-12-31','2026-10-16 14:30:00',NULL),(2,'LATEST','TEST',1,1,'2026-01-01','2099-12-31','2026-10-16 14:30:00',NULL),(3,'DELETED','TEST',1,1,'2026-01-01','2099-12-31','2026-10-16 14:30:00','2026-10-17'),(4,'OTHER-TIME','TEST',1,1,'2026-01-01','2099-12-31','2026-10-16 14:30:01',NULL),(5,'NULLS','NULL-TEST',NULL,NULL,'2026-01-01','2099-12-31','2026-10-16 14:30:00',NULL);
+INSERT INTO lcn_licence_charge VALUES (1,2,'FEE',100.00,'2026-01-01',NULL),(2,2,'FEE',12345.67,'2026-01-02',NULL),(3,2,'ARR',25.50,'2026-01-02',NULL),(4,2,'FINE',10.00,'2026-01-02',NULL),(5,2,'FINE',11.25,'2026-01-02',NULL),(6,2,'FINE',999.00,'2026-01-03','2026-01-04'),(7,2,'OTHER',888.00,'2026-01-05',NULL),(8,1,'FINE',777.00,'2026-01-05',NULL);

@@ -19,6 +19,17 @@ spec:
     - {{ .name }}
     {{- end }}
   http:
+    {{- if .Values.preAuth.internalOnly }}
+    # This exclusion precedes every configured catch-all public route.
+    - name: deny-public-offer-creation
+      match:
+        - uri:
+            regex: '(?i)^/+v1/+certify/+pre-authorized-data(/.*)?$'
+      directResponse:
+        status: 403
+        body:
+          string: '{"error":"internal_endpoint"}'
+    {{- end }}
     {{- $releaseName := .Release.Name }}
     {{- range .Values.istio.uriMatches }}
     - headers:

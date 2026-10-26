@@ -36,7 +36,7 @@
     </developers>
 
     <properties>
-        <certify-plugins.location>target</certify-plugins.location>
+        <certify-plugins.location>${project.build.directory}</certify-plugins.location>
         <mock-certify-plugin.version>0.6.0</mock-certify-plugin.version>
         <mock-certify-plugin.fileName>mock-certify-plugin.jar</mock-certify-plugin.fileName>
         <mosip-identity-certify-plugin.version>0.6.0</mosip-identity-certify-plugin.version>
@@ -46,6 +46,26 @@
         <sunbird-rc-certify-integration-plugin.version>0.6.0</sunbird-rc-certify-integration-plugin.version>
         <sunbird-rc-certify-integration-plugin.fileName>sunbird-rc-certify-integration-impl.jar</sunbird-rc-certify-integration-plugin.fileName>
     </properties>
+    <dependencies>
+        <dependency>
+            <groupId>io.inji.certify</groupId>
+            <artifactId>certify-dataprovider-router</artifactId>
+            <version>${project.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.inji.certify</groupId>
+            <artifactId>dmt-data-access</artifactId>
+            <version>${project.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.inji.certify</groupId>
+            <artifactId>erl-dataprovider-plugin</artifactId>
+            <version>${project.version}</version>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
     <build>
         <plugins>
             <plugin>
@@ -63,6 +83,38 @@
                 </executions>
                 <configuration>
                     <artifactItems>
+                        <artifactItem>
+                            <groupId>io.inji.certify</groupId>
+                            <artifactId>certify-dataprovider-router</artifactId>
+                            <version>${project.version}</version>
+                            <outputDirectory>${certify-plugins.location}</outputDirectory>
+                            <destFileName>certify-dataprovider-router.jar</destFileName>
+                            <type>jar</type>
+                        </artifactItem>
+                        <artifactItem>
+                            <groupId>io.inji.certify</groupId>
+                            <artifactId>dmt-data-access</artifactId>
+                            <version>${project.version}</version>
+                            <outputDirectory>${certify-plugins.location}</outputDirectory>
+                            <destFileName>dmt-data-access.jar</destFileName>
+                            <type>jar</type>
+                        </artifactItem>
+                        <artifactItem>
+                            <groupId>io.inji.certify</groupId>
+                            <artifactId>erl-dataprovider-plugin</artifactId>
+                            <version>${project.version}</version>
+                            <outputDirectory>${certify-plugins.location}</outputDirectory>
+                            <destFileName>erl-dataprovider-plugin.jar</destFileName>
+                            <type>jar</type>
+                        </artifactItem>
+                        <artifactItem>
+                            <groupId>com.mysql</groupId>
+                            <artifactId>mysql-connector-j</artifactId>
+                            <version>${mysql.version}</version>
+                            <outputDirectory>${certify-plugins.location}</outputDirectory>
+                            <destFileName>mysql-connector-j.jar</destFileName>
+                            <type>jar</type>
+                        </artifactItem>
                         <artifactItem>
                             <groupId>io.inji.certify</groupId>
                             <artifactId>mock-certify-plugin</artifactId>

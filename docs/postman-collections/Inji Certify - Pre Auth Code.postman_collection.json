@@ -454,6 +454,177 @@
 					"response": []
 				}
 			]
+		},
+		{
+			"name": "ERL internal lookup offer",
+			"request": {
+				"method": "POST",
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{erl_service_access_token}}",
+							"type": "string"
+						}
+					]
+				},
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"credential_configuration_id\": \"ERLCredential\",\n  \"claims\": {\n    \"vehicle_number\": \"{{erl_vehicle_number}}\",\n    \"issued_date\": \"{{erl_issued_date}}\"\n  },\n  \"expires_in\": 600,\n  \"tx_code\": \"{{erl_tx_code}}\"\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": "{{certify_internal_base_url}}/pre-authorized-data",
+				"description": "Internal only. Flat claims are retrieval inputs; credential configuration selects the backend plugin. Keep service token and transaction code in local secret variables."
+			},
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test(\"Offer created\", () => { pm.response.to.have.status(200); const body = pm.response.json(); pm.expect(body.errors || []).to.be.empty; pm.expect(body.credential_offer_uri).to.match(/^openid-credential-offer:/); });",
+							"if (pm.response.code === 200 && pm.response.json().credential_offer_uri) pm.collectionVariables.set(\"erl_credential_offer_uri\", pm.response.json().credential_offer_uri);"
+						]
+					}
+				}
+			]
+		},
+		{
+			"name": "ERL rejects invalid timestamp",
+			"request": {
+				"method": "POST",
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{erl_service_access_token}}",
+							"type": "string"
+						}
+					]
+				},
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"credential_configuration_id\": \"ERLCredential\",\n  \"claims\": {\n    \"vehicle_number\": \"{{erl_vehicle_number}}\",\n    \"issued_date\": \"2026-02-30T14:30:00\"\n  },\n  \"expires_in\": 600,\n  \"tx_code\": \"{{erl_tx_code}}\"\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": "{{certify_internal_base_url}}/pre-authorized-data",
+				"description": "Internal only. Flat claims are retrieval inputs; credential configuration selects the backend plugin. Keep service token and transaction code in local secret variables."
+			},
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test(\"Invalid lookup rejected\", () => pm.response.to.have.status(400));"
+						]
+					}
+				}
+			]
+		},
+		{
+			"name": "ERL rejects provider override",
+			"request": {
+				"method": "POST",
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{erl_service_access_token}}",
+							"type": "string"
+						}
+					]
+				},
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"credential_configuration_id\": \"ERLCredential\",\n  \"claims\": {\n    \"vehicle_number\": \"{{erl_vehicle_number}}\",\n    \"issued_date\": \"{{erl_issued_date}}\",\n    \"provider\": \"erl\"\n  },\n  \"expires_in\": 600,\n  \"tx_code\": \"{{erl_tx_code}}\"\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": "{{certify_internal_base_url}}/pre-authorized-data",
+				"description": "Internal only. Flat claims are retrieval inputs; credential configuration selects the backend plugin. Keep service token and transaction code in local secret variables."
+			},
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test(\"Invalid lookup rejected\", () => pm.response.to.have.status(400));"
+						]
+					}
+				}
+			]
+		},
+		{
+			"name": "ERL public offer creation denied",
+			"request": {
+				"method": "POST",
+				"url": "{{certify_public_base_url}}/pre-authorized-data",
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{erl_service_access_token}}",
+							"type": "string"
+						}
+					]
+				},
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\"credential_configuration_id\": \"ERLCredential\", \"claims\": {\"vehicle_number\": \"{{erl_vehicle_number}}\", \"issued_date\": \"{{erl_issued_date}}\"}, \"expires_in\": 600, \"tx_code\": \"{{erl_tx_code}}\"}"
+				}
+			},
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test(\"Public offer creation denied\", () => pm.expect(pm.response.code).to.be.oneOf([403, 404]));"
+						],
+						"type": "text/javascript"
+					}
+				}
+			]
 		}
 	],
 	"event": [
@@ -508,6 +679,22 @@
 		{
 			"key": "holder_private_key",
 			"value": ""
+		},
+		{
+			"key": "certify_internal_base_url",
+			"value": "http://localhost:8090/v1/certify"
+		},
+		{
+			"key": "certify_public_base_url",
+			"value": "http://localhost:8090/v1/certify"
+		},
+		{
+			"key": "erl_vehicle_number",
+			"value": "WP-ABC-1234"
+		},
+		{
+			"key": "erl_issued_date",
+			"value": "2026-10-16T14:30:00"
 		}
 	]
 }

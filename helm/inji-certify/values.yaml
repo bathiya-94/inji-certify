@@ -446,3 +446,10 @@ istio:
       port: 80
 
 installHSMPlugin: true
+
+# Offer creation is private. Approved callers use the ClusterIP service directly.
+# With Istio enabled, an empty allowlist denies offer creation for all workloads.
+preAuth:
+  internalOnly: true
+  allowedPrincipals: []
+  # - cluster.local/ns/dmt/sa/erl-backend

@@ -1,0 +1,21 @@
+{
+  "@context": {
+    "@version": 1.1,
+    "@protected": true,
+    "ERLCredential": "https://example.org/dmt/erl#ERLCredential",
+    "licence_id": "https://example.org/dmt/erl#licence_id",
+    "license_no": "https://example.org/dmt/erl#license_no",
+    "class_of_vehicle": "https://example.org/dmt/erl#class_of_vehicle",
+    "fuel_type": "https://example.org/dmt/erl#fuel_type",
+    "vehicle_no": "https://example.org/dmt/erl#vehicle_no",
+    "owner_name": "https://example.org/dmt/erl#owner_name",
+    "owner_address": "https://example.org/dmt/erl#owner_address",
+    "vehicle_weight": "https://example.org/dmt/erl#vehicle_weight",
+    "licence_fee": "https://example.org/dmt/erl#licence_fee",
+    "arrears": "https://example.org/dmt/erl#arrears",
+    "fines_paid": "https://example.org/dmt/erl#fines_paid",
+    "validity_period_start_date": "https://example.org/dmt/erl#validity_period_start_date",
+    "validity_period_end_date": "https://example.org/dmt/erl#validity_period_end_date",
+    "issued_date": "https://example.org/dmt/erl#issued_date"
+  }
+}

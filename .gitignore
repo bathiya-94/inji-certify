@@ -20,6 +20,8 @@
 hs_err_pid*
 
 # other directories
+.codex/
+.vscode/
 target/
 .idea/
 *.p12
