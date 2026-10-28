@@ -2223,6 +2223,15 @@ components:
         vct:
           type: string
           description: Represents the Verifiable Credential Type (VCT) used in Selective Disclosure JWT (SD-JWT) credentials. This field specifies the credential type identifier required for `vc+sd-jwt` format.
+        include_credential_qr:
+          type: boolean
+          default: false
+          description: >-
+            Custom opt-in extension for ldp_vc only. Encode the complete signed
+            credential with PixelPass and return credential_qr beside credential.
+            Absent or false preserves the ordinary response. A true value with
+            another format is rejected before issuance. Existing configured
+            Claim 169 generation is independent of this flag.
     CredentialProof:
       type: object
       properties:
@@ -2283,6 +2292,31 @@ components:
           type: integer
           format: int32
           description: A JSON integer specifying the lifetime (in seconds) of the c_nonce.
+        credential_qr:
+          $ref: '#/components/schemas/CredentialQr'
+        credential_qr_error:
+          type: string
+          enum: [encoding_failed]
+          description: >-
+            Custom extension returned only when opted-in immediate issuance
+            succeeds but QR encoding fails. The credential remains usable; do
+            not repeat issuance to recover from this error. Mutually exclusive
+            with credential_qr. Both QR fields are omitted for deferred issuance.
+    CredentialQr:
+      type: object
+      description: >-
+        Custom response extension containing the complete signed ldp_vc encoded
+        by PixelPass with an empty header. Render data as QR text; this is not an
+        image and is not part of the signed credential.
+      required: [encoding, data]
+      properties:
+        encoding:
+          type: string
+          enum: [pixelpass]
+        data:
+          type: string
+          minLength: 1
+          description: PixelPass Base45 text. Preserve all characters, including spaces.
     VCError:
       type: object
       properties:

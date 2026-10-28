@@ -1,6 +1,7 @@
 package io.mosip.certify.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import foundation.identity.jsonld.JsonLDObject;
 import io.mosip.certify.api.spi.AuditPlugin;
 import io.mosip.certify.core.constants.ErrorConstants;
@@ -10,7 +11,9 @@ import io.mosip.certify.core.exception.InvalidRequestException;
 import io.mosip.certify.core.spi.CredentialConfigurationService;
 import io.mosip.certify.core.spi.VCIssuanceService;
 import io.mosip.certify.exception.InvalidNonceException;
+import io.mosip.certify.exception.CredentialQrEncodingException;
 import io.mosip.certify.services.VCICacheService;
+import io.mosip.certify.services.CredentialQrService;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mockito;
@@ -26,6 +29,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.not;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
@@ -51,6 +57,9 @@ public class VCIssuanceControllerTest {
 
     @MockBean
     VCICacheService vciCacheService;
+
+    @MockBean
+    CredentialQrService credentialQrService;
 
     @MockBean
     CredentialConfigurationService credentialConfigurationService;
@@ -154,6 +163,142 @@ public class VCIssuanceControllerTest {
                         .contentType(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.credential").exists());
+    }
+
+    @Test
+    public void getVerifiableCredential_withQr_preservesEncodedStringOnAllRoutes() throws Exception {
+        String qrData = " A B +/%:0123 ";
+        Map<String, Object> credential = signedCredential();
+        for (String endpoint : List.of("/issuance/credential", "/issuance/vd11/credential", "/issuance/vd12/credential")) {
+            Mockito.reset(vcIssuanceService, credentialQrService);
+            CredentialRequest request = qrRequest(true);
+            CredentialResponse<Object> response = new CredentialResponse<>();
+            response.setCredential(credential);
+            Mockito.when(vcIssuanceService.getCredential(request)).thenReturn(response);
+            Mockito.when(credentialQrService.encode(credential)).thenReturn(new CredentialQr("pixelpass", qrData));
+
+            mockMvc.perform(post(endpoint)
+                            .content(objectMapper.writeValueAsBytes(request))
+                            .contentType(MediaType.APPLICATION_JSON))
+                    .andExpect(status().isOk())
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                    .andExpect(jsonPath("$.credential").value(equalTo(credential)))
+                    .andExpect(jsonPath("$.credential_qr.encoding").value("pixelpass"))
+                    .andExpect(jsonPath("$.credential_qr.data").value(qrData))
+                    .andExpect(jsonPath("$.credential_qr_error").doesNotExist())
+                    .andExpect(jsonPath("$.credentialQr").doesNotExist())
+                    .andExpect(endpoint.equals("/issuance/credential")
+                            ? jsonPath("$.format").doesNotExist() : jsonPath("$.format").value("ldp_vc"));
+
+            Mockito.verify(vcIssuanceService, Mockito.times(1)).getCredential(request);
+            Mockito.verify(credentialQrService, Mockito.times(1)).encode(credential);
+        }
+    }
+
+    @Test
+    public void getVerifiableCredential_whenQrEncodingFails_returnsCredentialAndSafeError() throws Exception {
+        CredentialRequest request = qrRequest(true);
+        Map<String, Object> credential = signedCredential();
+        CredentialResponse<Object> response = new CredentialResponse<>();
+        response.setCredential(credential);
+        Mockito.when(vcIssuanceService.getCredential(request)).thenReturn(response);
+        Mockito.when(credentialQrService.encode(credential)).thenThrow(
+                new CredentialQrEncodingException("Credential QR encoding failed",
+                        new IllegalStateException("private credential detail")));
+
+        mockMvc.perform(post("/issuance/credential")
+                        .content(objectMapper.writeValueAsBytes(request))
+                        .contentType(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.credential").value(equalTo(credential)))
+                .andExpect(jsonPath("$.credential_qr").doesNotExist())
+                .andExpect(jsonPath("$.credential_qr_error").value("encoding_failed"))
+                .andExpect(content().string(not(containsString("private credential detail"))));
+
+        Mockito.verify(vcIssuanceService, Mockito.times(1)).getCredential(request);
+        Mockito.verify(credentialQrService, Mockito.times(1)).encode(credential);
+    }
+
+    @Test
+    public void getVerifiableCredential_withQrOmittedOrFalse_doesNotEncode() throws Exception {
+        for (Boolean includeQr : new Boolean[]{null, false}) {
+            Mockito.reset(vcIssuanceService, credentialQrService);
+            CredentialRequest request = qrRequest(includeQr);
+            Map<String, Object> credential = signedCredential();
+            CredentialResponse<Object> response = new CredentialResponse<>();
+            response.setCredential(credential);
+            Mockito.when(vcIssuanceService.getCredential(request)).thenReturn(response);
+            ObjectNode body = objectMapper.valueToTree(request);
+            if (includeQr == null) {
+                body.remove("include_credential_qr");
+            }
+
+            mockMvc.perform(post("/issuance/credential")
+                            .content(objectMapper.writeValueAsBytes(body))
+                            .contentType(MediaType.APPLICATION_JSON))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.credential").value(equalTo(credential)))
+                    .andExpect(jsonPath("$.credential_qr").doesNotExist())
+                    .andExpect(jsonPath("$.credential_qr_error").doesNotExist());
+
+            Mockito.verify(vcIssuanceService, Mockito.times(1)).getCredential(request);
+            Mockito.verifyNoInteractions(credentialQrService);
+        }
+    }
+
+    @Test
+    public void getVerifiableCredential_withQrAndUnsupportedFormat_rejectsBeforeIssuance() throws Exception {
+        CredentialRequest request = qrRequest(true);
+        request.setFormat("jwt_vc_json");
+
+        mockMvc.perform(post("/issuance/credential")
+                        .content(objectMapper.writeValueAsBytes(request))
+                        .contentType(MediaType.APPLICATION_JSON))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value(VCIErrorConstants.UNSUPPORTED_CREDENTIAL_FORMAT));
+
+        Mockito.verifyNoInteractions(vcIssuanceService, credentialQrService);
+    }
+
+    @Test
+    public void getVerifiableCredential_withQrAndDeferredResponse_doesNotEncode() throws Exception {
+        CredentialRequest request = qrRequest(true);
+        CredentialResponse<Object> response = new CredentialResponse<>();
+        response.setAcceptance_token("deferred-token");
+        Mockito.when(vcIssuanceService.getCredential(request)).thenReturn(response);
+
+        mockMvc.perform(post("/issuance/credential")
+                        .content(objectMapper.writeValueAsBytes(request))
+                        .contentType(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.acceptance_token").value("deferred-token"))
+                .andExpect(jsonPath("$.credential").doesNotExist())
+                .andExpect(jsonPath("$.credential_qr").doesNotExist())
+                .andExpect(jsonPath("$.credential_qr_error").doesNotExist());
+
+        Mockito.verify(vcIssuanceService, Mockito.times(1)).getCredential(request);
+        Mockito.verifyNoInteractions(credentialQrService);
+    }
+
+    private CredentialRequest qrRequest(Boolean includeQr) {
+        CredentialDefinition definition = new CredentialDefinition();
+        definition.setType(List.of("VerifiableCredential", "SampleVerifiableCredential_ldp"));
+        definition.setContext(List.of("https://www.w3.org/2018/credentials/v1"));
+        CredentialProof proof = new CredentialProof();
+        proof.setProof_type("jwt");
+        proof.setJwt("dummy_jwt_proof");
+        CredentialRequest request = new CredentialRequest();
+        request.setFormat("ldp_vc");
+        request.setCredential_definition(definition);
+        request.setProof(proof);
+        request.setIncludeCredentialQr(includeQr);
+        return request;
+    }
+
+    private Map<String, Object> signedCredential() {
+        return Map.of("id", "urn:uuid:test-credential",
+                "credentialSubject", Map.of("vehicle_no", "TEST-1234"),
+                "proof", Map.of("type", "Ed25519Signature2020", "proofValue", "original-proof"));
     }
 
     @Test
