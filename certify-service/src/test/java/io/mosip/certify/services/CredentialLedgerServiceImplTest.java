@@ -34,9 +34,19 @@ public class CredentialLedgerServiceImplTest {
     @InjectMocks
     private CredentialLedgerServiceImpl ledgerService;
 
+    private final io.mosip.certify.config.LedgerSearchProperties searchProperties = new io.mosip.certify.config.LedgerSearchProperties();
+    private IndexedAttributePolicy policy;
+
     @Before
     public void setUp() {
         MockitoAnnotations.openMocks(this);
+        io.mosip.certify.config.IndexedAttributesConfig config = new io.mosip.certify.config.IndexedAttributesConfig();
+        config.getIndexedMappings().put("recipientEmail", "$.recipientEmail");
+        config.getIndexedMappings().put("recipientName", "$.recipientName");
+        policy = new IndexedAttributePolicy();
+        org.springframework.test.util.ReflectionTestUtils.setField(policy, "config", config);
+        org.springframework.test.util.ReflectionTestUtils.setField(ledgerService, "searchProperties", searchProperties);
+        org.springframework.test.util.ReflectionTestUtils.setField(ledgerService, "indexedAttributePolicy", policy);
     }
 
     @Test
@@ -48,9 +58,9 @@ public class CredentialLedgerServiceImplTest {
         request.setIndexedAttributesEquals(Map.of("recipientEmail", "abc@example.com"));
 
         Ledger ledger = createLedger("67823e96-fda0-4eba-9828-a32a8d22cc42");
-        when(ledgerRepository.findBySearchRequest(request)).thenReturn(List.of(ledger));
+        when(ledgerRepository.findBySearchRequest(eq(request), anyInt(), anyInt())).thenReturn(List.of(ledger));
 
-        List<CredentialStatusResponse> results = ledgerService.searchCredentialLedger(request);
+        List<CredentialStatusResponse> results = ledgerService.searchCredentialLedger(request).records();
 
         Assert.assertEquals(1, results.size());
         Assert.assertEquals("67823e96-fda0-4eba-9828-a32a8d22cc42", results.get(0).getCredentialId());
@@ -63,9 +73,9 @@ public class CredentialLedgerServiceImplTest {
         request.setCredentialType("VerifiableCredential");
         request.setIndexedAttributesEquals(Map.of("recipientName", "Unknown"));
 
-        when(ledgerRepository.findBySearchRequest(request)).thenReturn(Collections.emptyList());
+        when(ledgerRepository.findBySearchRequest(eq(request), anyInt(), anyInt())).thenReturn(Collections.emptyList());
 
-        List<CredentialStatusResponse> results = ledgerService.searchCredentialLedger(request);
+        List<CredentialStatusResponse> results = ledgerService.searchCredentialLedger(request).records();
 
         assertTrue(results.isEmpty());
     }
@@ -79,7 +89,7 @@ public class CredentialLedgerServiceImplTest {
 
         CertifyException ex = assertThrows(CertifyException.class, () -> ledgerService.searchCredentialLedger(request));
         Assert.assertEquals(ErrorConstants.INVALID_SEARCH_CRITERIA, ex.getErrorCode());
-        Assert.assertEquals("Invalid search criteria provided.", ex.getMessage());
+        Assert.assertTrue(ex.getMessage().contains("credentialId or at least one exact-match"));
     }
 
     @Test
@@ -91,7 +101,7 @@ public class CredentialLedgerServiceImplTest {
 
         CertifyException ex = assertThrows(CertifyException.class, () -> ledgerService.searchCredentialLedger(request));
         Assert.assertEquals(ErrorConstants.INVALID_SEARCH_CRITERIA, ex.getErrorCode());
-        Assert.assertEquals("Invalid search criteria provided.", ex.getMessage());
+        Assert.assertTrue(ex.getMessage().contains("credentialId or at least one exact-match"));
     }
 
     @Test
@@ -101,7 +111,7 @@ public class CredentialLedgerServiceImplTest {
         request.setCredentialType("VerifiableCredential");
         request.setIndexedAttributesEquals(Map.of("recipientEmail", "abc@example.com"));
 
-        when(ledgerRepository.findBySearchRequest(request)).thenThrow(new RuntimeException("DB error"));
+        when(ledgerRepository.findBySearchRequest(eq(request), anyInt(), anyInt())).thenThrow(new RuntimeException("DB error"));
 
         CertifyException ex = assertThrows(CertifyException.class, () -> ledgerService.searchCredentialLedger(request));
         Assert.assertEquals(ErrorConstants.SEARCH_CREDENTIALS_FAILED, ex.getErrorCode());
@@ -112,7 +122,7 @@ public class CredentialLedgerServiceImplTest {
     public void storeLedgerEntry_Success() {
         CredentialStatusDetail detail = new CredentialStatusDetail();
         Map<String, Object> attrs = Collections.singletonMap("foo", "bar");
-        ledgerService.storeLedgerEntry("cid", "issuer", "ctype", detail, attrs, LocalDateTime.now());
+        ledgerService.storeLedgerEntry("cid", "issuer", "ctype", detail, attrs, LocalDateTime.now(), LocalDateTime.now().plusDays(1));
         verify(ledgerRepository).save(any(Ledger.class));
     }
 
@@ -120,7 +130,7 @@ public class CredentialLedgerServiceImplTest {
     public void storeLedgerEntry_Error_Throws() {
         doThrow(new RuntimeException("fail")).when(ledgerRepository).save(any());
         try {
-            ledgerService.storeLedgerEntry("cid", "issuer", "ctype", new CredentialStatusDetail(), Collections.emptyMap(), LocalDateTime.now());
+            ledgerService.storeLedgerEntry("cid", "issuer", "ctype", new CredentialStatusDetail(), Collections.emptyMap(), LocalDateTime.now(), null);
             fail("Expected RuntimeException");
         } catch (RuntimeException ex) {
             // expected
@@ -134,7 +144,7 @@ public class CredentialLedgerServiceImplTest {
         request.setCredentialType("VerifiableCredential");
         request.setIndexedAttributesEquals(Map.of("recipientEmail", "abc@example.com"));
 
-        when(ledgerRepository.findBySearchRequest(request)).thenReturn(null);
+        when(ledgerRepository.findBySearchRequest(eq(request), anyInt(), anyInt())).thenReturn(null);
 
         CertifyException ex = assertThrows(CertifyException.class, () -> ledgerService.searchCredentialLedger(request));
         assertEquals(ErrorConstants.SEARCH_CREDENTIALS_FAILED, ex.getErrorCode());
@@ -155,9 +165,9 @@ public class CredentialLedgerServiceImplTest {
         Ledger ledgerWithEmptyDetails = createLedger("id-empty");
         ledgerWithEmptyDetails.setCredentialStatusDetails(Collections.emptyList());
 
-        when(ledgerRepository.findBySearchRequest(request)).thenReturn(List.of(ledgerWithNullDetails, ledgerWithEmptyDetails));
+        when(ledgerRepository.findBySearchRequest(eq(request), anyInt(), anyInt())).thenReturn(List.of(ledgerWithNullDetails, ledgerWithEmptyDetails));
 
-        List<CredentialStatusResponse> results = ledgerService.searchCredentialLedger(request);
+        List<CredentialStatusResponse> results = ledgerService.searchCredentialLedger(request).records();
         assertEquals(2, results.size());
         assertEquals("id-null", results.get(0).getCredentialId());
         assertEquals("id-empty", results.get(1).getCredentialId());
@@ -185,9 +195,9 @@ public class CredentialLedgerServiceImplTest {
 
         ledger.setCredentialStatusDetails(List.of(detail1, detail2));
 
-        when(ledgerRepository.findBySearchRequest(request)).thenReturn(List.of(ledger));
+        when(ledgerRepository.findBySearchRequest(eq(request), anyInt(), anyInt())).thenReturn(List.of(ledger));
 
-        List<CredentialStatusResponse> results = ledgerService.searchCredentialLedger(request);
+        List<CredentialStatusResponse> results = ledgerService.searchCredentialLedger(request).records();
         assertEquals(2, results.size());
         assertEquals("multi-details", results.get(0).getCredentialId());
         assertEquals("multi-details", results.get(1).getCredentialId());
@@ -212,9 +222,9 @@ public class CredentialLedgerServiceImplTest {
         detail.setCreatedTimes(100L);
         ledger2.setCredentialStatusDetails(List.of(detail));
 
-        when(ledgerRepository.findBySearchRequest(request)).thenReturn(List.of(ledger1, ledger2));
+        when(ledgerRepository.findBySearchRequest(eq(request), anyInt(), anyInt())).thenReturn(List.of(ledger1, ledger2));
 
-        List<CredentialStatusResponse> results = ledgerService.searchCredentialLedger(request);
+        List<CredentialStatusResponse> results = ledgerService.searchCredentialLedger(request).records();
         assertEquals(2, results.size());
         assertEquals("id-null", results.get(0).getCredentialId());
         assertEquals("id-nonnull", results.get(1).getCredentialId());
@@ -232,9 +242,9 @@ public class CredentialLedgerServiceImplTest {
         CredentialStatusDetail invalidDetail = new CredentialStatusDetail(); // statusPurpose not set
         ledger.setCredentialStatusDetails(List.of(invalidDetail));
 
-        when(ledgerRepository.findBySearchRequest(request)).thenReturn(List.of(ledger));
+        when(ledgerRepository.findBySearchRequest(eq(request), anyInt(), anyInt())).thenReturn(List.of(ledger));
 
-        List<CredentialStatusResponse> results = ledgerService.searchCredentialLedger(request);
+        List<CredentialStatusResponse> results = ledgerService.searchCredentialLedger(request).records();
         assertEquals(1, results.size());
         assertNull(results.get(0).getStatusPurpose());
     }
@@ -252,9 +262,9 @@ public class CredentialLedgerServiceImplTest {
         Ledger ledgerWithEmptyDetails = createLedger("id-empty-v2");
         ledgerWithEmptyDetails.setCredentialStatusDetails(Collections.emptyList());
 
-        when(ledgerRepository.findBySearchRequest(request)).thenReturn(List.of(ledgerWithNullDetails, ledgerWithEmptyDetails));
+        when(ledgerRepository.findBySearchRequest(eq(request), anyInt(), anyInt())).thenReturn(List.of(ledgerWithNullDetails, ledgerWithEmptyDetails));
 
-        List<CredentialStatusResponse> results = ledgerService.searchCredentialLedgerV2(request);
+        List<CredentialStatusResponse> results = ledgerService.searchCredentialLedgerV2(request).records();
         assertEquals(2, results.size());
         assertEquals("id-null-v2", results.get(0).getCredentialId());
         assertEquals("id-empty-v2", results.get(1).getCredentialId());
@@ -282,9 +292,9 @@ public class CredentialLedgerServiceImplTest {
 
         ledger.setCredentialStatusDetails(List.of(detail1, detail2));
 
-        when(ledgerRepository.findBySearchRequest(request)).thenReturn(List.of(ledger));
+        when(ledgerRepository.findBySearchRequest(eq(request), anyInt(), anyInt())).thenReturn(List.of(ledger));
 
-        List<CredentialStatusResponse> results = ledgerService.searchCredentialLedgerV2(request);
+        List<CredentialStatusResponse> results = ledgerService.searchCredentialLedgerV2(request).records();
         assertEquals(2, results.size());
         assertEquals("multi-details-v2", results.get(0).getCredentialId());
         assertEquals("multi-details-v2", results.get(1).getCredentialId());
@@ -309,9 +319,9 @@ public class CredentialLedgerServiceImplTest {
         detail.setCreatedTimes(100L);
         ledger2.setCredentialStatusDetails(List.of(detail));
 
-        when(ledgerRepository.findBySearchRequest(request)).thenReturn(List.of(ledger1, ledger2));
+        when(ledgerRepository.findBySearchRequest(eq(request), anyInt(), anyInt())).thenReturn(List.of(ledger1, ledger2));
 
-        List<CredentialStatusResponse> results = ledgerService.searchCredentialLedgerV2(request);
+        List<CredentialStatusResponse> results = ledgerService.searchCredentialLedgerV2(request).records();
         assertEquals(2, results.size());
         assertEquals("id-null-v2", results.get(0).getCredentialId());
         assertEquals("id-nonnull-v2", results.get(1).getCredentialId());
@@ -329,9 +339,9 @@ public class CredentialLedgerServiceImplTest {
         CredentialStatusDetail invalidDetail = new CredentialStatusDetail(); // statusPurpose not set
         ledger.setCredentialStatusDetails(List.of(invalidDetail));
 
-        when(ledgerRepository.findBySearchRequest(request)).thenReturn(List.of(ledger));
+        when(ledgerRepository.findBySearchRequest(eq(request), anyInt(), anyInt())).thenReturn(List.of(ledger));
 
-        List<CredentialStatusResponse> results = ledgerService.searchCredentialLedgerV2(request);
+        List<CredentialStatusResponse> results = ledgerService.searchCredentialLedgerV2(request).records();
         assertEquals(1, results.size());
         assertNull(results.get(0).getStatusPurpose());
     }

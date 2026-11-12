@@ -113,6 +113,9 @@
 		<module>certify-service</module>
 		<module>certify-core</module>
 		<module>certify-integration-api</module>
+        <module>certify-dataprovider-router</module>
+        <module>dmt-data-access</module>
+        <module>erl-dataprovider-plugin</module>
 	</modules>
 	
 	<dependencies>
@@ -169,6 +172,10 @@
 	</dependencyManagement>
 
 	<profiles>
+        <profile>
+            <id>with-plugins</id>
+            <modules><module>certify-service-with-plugins</module></modules>
+        </profile>
 		<profile>
 			<id>sonar</id>
 			<properties>

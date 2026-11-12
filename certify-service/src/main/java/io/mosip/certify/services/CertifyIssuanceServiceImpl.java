@@ -11,6 +11,7 @@ import io.mosip.certify.api.dto.VCResult;
 import io.mosip.certify.api.exception.DataProviderExchangeException;
 import io.mosip.certify.api.spi.AuditPlugin;
 import io.mosip.certify.api.spi.DataProviderPlugin;
+import io.mosip.certify.api.spi.LookupDataProviderPlugin;
 import io.mosip.certify.api.util.Action;
 import io.mosip.certify.api.util.ActionStatus;
 import io.mosip.certify.api.util.AuditHelper;
@@ -24,12 +25,10 @@ import io.mosip.certify.core.exception.CertifyException;
 import io.mosip.certify.core.exception.InvalidRequestException;
 import io.mosip.certify.core.exception.NotAuthenticatedException;
 import io.mosip.certify.core.spi.CredentialConfigurationService;
-import io.mosip.certify.core.spi.CredentialLedgerService;
 import io.mosip.certify.core.spi.VCIssuanceService;
 import io.mosip.certify.core.util.SecurityHelperService;
 import io.mosip.certify.credential.Credential;
 import io.mosip.certify.credential.CredentialFactory;
-import io.mosip.certify.core.dto.CredentialStatusDetail;
 import io.mosip.certify.proof.ProofValidator;
 import io.mosip.certify.proof.ProofValidatorFactory;
 import io.mosip.certify.utils.CredentialUtils;
@@ -122,7 +121,7 @@ public class CertifyIssuanceServiceImpl implements VCIssuanceService {
     private LedgerUtils ledgerUtils;
 
     @Autowired
-    private CredentialLedgerService credentialLedgerService;
+    private IssuanceRecordService issuanceRecordService;
 
     @Value("#{${mosip.certify.issuer.ledger-enabled:true}}")
     private boolean isLedgerEnabled;
@@ -165,6 +164,11 @@ public class CertifyIssuanceServiceImpl implements VCIssuanceService {
             throw new CertifyException(VCIErrorConstants.INVALID_SCOPE, "No credential mapping found for the provided scope.");
         }
 
+        if (dataProviderPlugin instanceof LookupDataProviderPlugin) {
+            TrustedLookupInput.fromTransaction(credentialMetadata.getId(),
+                    vciCacheService.getVCITransaction(parsedAccessToken.getAccessTokenHash()));
+        }
+
         // 3. Proof Validation
         ProofValidator proofValidator = proofValidatorFactory.getProofValidator(credentialRequest.getProof().getProof_type());
         String validCNonce = VCIssuanceUtil.getValidClientNonce(vciCacheService, parsedAccessToken, cNonceExpireSeconds, securityHelperService, log);
@@ -190,13 +194,19 @@ public class CertifyIssuanceServiceImpl implements VCIssuanceService {
     }
 
     private VCResult<?> getVerifiableCredential(CredentialRequest credentialRequest, CredentialMetadata credentialMetadata, String holderId) {
-        parsedAccessToken.getClaims().put("accessTokenHash", parsedAccessToken.getAccessTokenHash());
+        Map<String, Object> providerInput = dataProviderPlugin instanceof LookupDataProviderPlugin
+                ? new HashMap<>(TrustedLookupInput.fromTransaction(credentialMetadata.getId(),
+                    vciCacheService.getVCITransaction(parsedAccessToken.getAccessTokenHash())))
+                : parsedAccessToken.getClaims();
+        providerInput.put("accessTokenHash", parsedAccessToken.getAccessTokenHash());
         VCRequestDto vcRequestDto = new VCRequestDto();
         vcRequestDto.setFormat(credentialRequest.getFormat());
+        VCResult<?> result;
+        IssuanceRecord issuanceRecord;
 
         try {
             // Fetch data once, as it's common to all formats
-            JSONObject jsonObject = dataProviderPlugin.fetchData(parsedAccessToken.getClaims());
+            JSONObject jsonObject = dataProviderPlugin.fetchData(providerInput);
             log.info("Data fetched successfully from Data Provider Plugin");
 
             String templateName;
@@ -266,6 +276,9 @@ public class CertifyIssuanceServiceImpl implements VCIssuanceService {
             String expiryTime = zonedDateTime.plus(duration).format(DateTimeFormatter.ofPattern(Constants.UTC_DATETIME_PATTERN));
             templateParams.put(VCDM2Constants.VALID_FROM, time);
             templateParams.put(VCDM2Constants.VALID_UNTIL, expiryTime);
+            if (dataProviderPlugin instanceof LookupDataProviderPlugin lookupProvider) {
+                lookupProvider.customizeTemplate(providerInput, templateParams);
+            }
 
             Credential cred = credentialFactory.getCredential(format).orElseThrow(() -> new CertifyException(VCIErrorConstants.UNSUPPORTED_CREDENTIAL_FORMAT));
             Map<String, Object> updatedTemplateParams = toJsonMap(templateParams);
@@ -287,22 +300,23 @@ public class CertifyIssuanceServiceImpl implements VCIssuanceService {
             }
 
             String unsignedCredential = cred.createCredential(updatedTemplateParams, templateName);
-            if(isLedgerEnabled) {
-                Map<String, Object> indexedAttributes = ledgerUtils.extractIndexedAttributes(jsonObject);
-                String credentialType = LedgerUtils.extractCredentialType(jsonObject);
-                String credentialId = null;
-                if(templateParams.containsKey(VCDMConstants.CREDENTIAL_ID)) {
-                    credentialId = templateParams.get(VCDMConstants.CREDENTIAL_ID).toString();
-                }
-                CredentialStatusDetail credentialStatusDetail = ledgerUtils.extractCredentialStatusDetails(jsonObject);
-                LocalDateTime issuanceDate = LocalDateTime.parse(time, DateTimeFormatter.ofPattern(Constants.UTC_DATETIME_PATTERN));
-                credentialLedgerService.storeLedgerEntry(credentialId, didUrl, credentialType, credentialStatusDetail, indexedAttributes, issuanceDate);
-                log.info("Successfully stored the credential issuance data in ledger with credentialType: {}", credentialType);
-            }
-            VCResult<?> result = cred.addProof(unsignedCredential, "", vcFormatter.getProofAlgorithm(templateName), vcFormatter.getAppID(templateName), vcFormatter.getRefID(templateName), vcFormatter.getDidUrl(templateName), vcFormatter.getSignatureCryptoSuite(templateName));
+            VCResult<?> signed = cred.addProof(unsignedCredential, "", vcFormatter.getProofAlgorithm(templateName), vcFormatter.getAppID(templateName), vcFormatter.getRefID(templateName), vcFormatter.getDidUrl(templateName), vcFormatter.getSignatureCryptoSuite(templateName));
+
+            // Read what must be recorded now, while the request data is at hand. It is written only after
+            // signing succeeded, so a signing failure never leaves an apparently issued ledger entry.
+            String credentialType = LedgerUtils.extractCredentialType(jsonObject);
+            issuanceRecord = new IssuanceRecord(
+                    templateParams.containsKey(VCDMConstants.CREDENTIAL_ID) ? templateParams.get(VCDMConstants.CREDENTIAL_ID).toString() : null,
+                    didUrl,
+                    credentialType,
+                    ledgerUtils.extractCredentialStatusDetails(jsonObject),
+                    isLedgerEnabled ? ledgerUtils.extractIndexedAttributes(jsonObject) : Map.of(),
+                    LocalDateTime.parse(time, DateTimeFormatter.ofPattern(Constants.UTC_DATETIME_PATTERN)),
+                    parseUtc(templateParams.get(VCDM2Constants.VALID_UNTIL)),
+                    isLedgerEnabled);
 
             jsonObject.remove(VCDM2Constants.CREDENTIAL_STATUS);
-            return result;
+            result = signed;
 
         } catch (DataProviderExchangeException e) {
             throw new CertifyException(e.getErrorCode());
@@ -312,6 +326,29 @@ public class CertifyIssuanceServiceImpl implements VCIssuanceService {
         } catch (CertifyException e) {
             log.error("Error during signing qr data: {}", e.getMessage());
             throw new CertifyException("ERROR_SIGNING_QR_DATA", e.getMessage());
+        }
+
+        // Persist after signing and before returning: if this fails the signed credential is not returned.
+        issuanceRecordService.record(issuanceRecord);
+        return result;
+    }
+
+    /** Parses the validity end rendered into the credential: either an ISO instant or the service's UTC pattern. */
+    private static LocalDateTime parseUtc(Object value) {
+        if (value == null) {
+            return null;
+        }
+        String text = value.toString();
+        try {
+            return LocalDateTime.ofInstant(Instant.parse(text), ZoneOffset.UTC);
+        } catch (DateTimeParseException ignored) {
+            // fall through to the service pattern
+        }
+        try {
+            return LocalDateTime.parse(text, DateTimeFormatter.ofPattern(Constants.UTC_DATETIME_PATTERN));
+        } catch (DateTimeParseException e) {
+            log.warn("Could not read the credential validity end '{}' for the ledger", text);
+            return null;
         }
     }
 

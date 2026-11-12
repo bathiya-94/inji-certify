@@ -24,3 +24,11 @@ To install the `hsm_client`, set the following environment variable in the deplo
 ```sh
 install_hsm_client=true
 ```
+
+Build the ERL router distribution from the parent checkout so the local plugin artifacts are available in the Maven reactor:
+
+```sh
+mvn -Pwith-plugins package -DskipTests -Dgpg.skip=true
+```
+
+The distribution copies `certify-dataprovider-router.jar`, `dmt-data-access.jar`, `erl-dataprovider-plugin.jar` and `mysql-connector-j.jar` alongside the existing plugin JARs. Standalone builds of this directory require the same-version parent and plugin modules to have been installed first. See `../erl-dataprovider-plugin/README.md` for configuration and internal offer routing.

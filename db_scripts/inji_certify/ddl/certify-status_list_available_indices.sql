@@ -18,6 +18,8 @@ CREATE TABLE status_list_available_indices (
     is_assigned BOOLEAN NOT NULL DEFAULT FALSE,   -- Flag indicating if this index has been assigned
     cr_dtimes TIMESTAMP NOT NULL DEFAULT NOW(),   -- Creation timestamp
     upd_dtimes TIMESTAMP,                          -- Update timestamp
+    issued_at TIMESTAMP,                           -- Set when a signed credential was returned for this position
+    credential_id VARCHAR(255),                    -- Credential that uses this position, set together with issued_at
 
     -- Foreign key constraint
     CONSTRAINT fk_status_list_credential

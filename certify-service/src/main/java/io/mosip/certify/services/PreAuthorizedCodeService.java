@@ -1,6 +1,8 @@
 package io.mosip.certify.services;
 
 import io.mosip.certify.core.constants.Constants;
+import io.mosip.certify.api.spi.DataProviderPlugin;
+import io.mosip.certify.api.spi.LookupDataProviderPlugin;
 import io.mosip.certify.core.constants.ErrorConstants;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.mosip.certify.core.constants.VCFormats;
@@ -45,6 +47,12 @@ public class PreAuthorizedCodeService {
     private final CredentialConfigRepository credentialConfigRepository;
 
     private final Validator validator;
+
+    @Autowired(required = false)
+    private DataProviderPlugin selectedDataProvider;
+
+    @Autowired(required = false)
+    private PreAuthCallerAuthorizer callerAuthorizer;
 
     @Value("${mosip.certify.identifier}")
     private String issuerIdentifier;
@@ -104,7 +112,7 @@ public class PreAuthorizedCodeService {
         long currentTime = System.currentTimeMillis();
         PreAuthCodeData codeData = PreAuthCodeData.builder()
                 .credentialConfigurationId(request.getCredentialConfigurationId())
-                .claims(request.getClaims())
+                .claims(new LinkedHashMap<>(request.getClaims()))
                 .txnCode(request.getTxCode())
                 .createdAt(currentTime)
                 .expiresAt(currentTime + (expirySeconds * 1000L)).build();
@@ -128,7 +136,16 @@ public class PreAuthorizedCodeService {
         }
 
         CredentialConfigurationSupportedDTO config = supportedConfigs.get(request.getCredentialConfigurationId());
-        validateClaims(config, request.getClaims());
+        if (selectedDataProvider instanceof LookupDataProviderPlugin lookupProvider) {
+            if (callerAuthorizer == null) throw new IllegalStateException("Internal caller authorization is not configured");
+            callerAuthorizer.authorize(request.getCredentialConfigurationId());
+            credentialConfigRepository.findByCredentialConfigKeyId(request.getCredentialConfigurationId())
+                    .filter(credential -> Constants.ACTIVE.equals(credential.getStatus()))
+                    .orElseThrow(() -> new InvalidRequestException(ErrorConstants.INVALID_CREDENTIAL_CONFIGURATION_ID));
+            lookupProvider.validateLookup(request.getCredentialConfigurationId(), request.getClaims());
+        } else {
+            validateClaims(config, request.getClaims());
+        }
     }
 
     private void validateClaims(CredentialConfigurationSupportedDTO config, Map<String, Object> providedClaims) {
@@ -329,7 +346,7 @@ public class PreAuthorizedCodeService {
         long currentTime = System.currentTimeMillis();
         PreAuthTransaction transaction = PreAuthTransaction.builder()
                 .credentialConfigurationId(codeData.getCredentialConfigurationId())
-                .claims(codeData.getClaims())
+                .claims(new LinkedHashMap<>(codeData.getClaims()))
                 .cNonce(cNonce)
                 .cNonceIssuedEpoch(java.time.LocalDateTime.now(java.time.ZoneOffset.UTC).toEpochSecond(java.time.ZoneOffset.UTC))
                 .cNonceExpireSeconds(cNonceExpirySeconds)
@@ -357,16 +374,11 @@ public class PreAuthorizedCodeService {
             throw new CertifyException(ErrorConstants.UNSUPPORTED_GRANT_TYPE, "Grant type not supported");
         }
 
-        // Atomically claim the pre-authorized code
-        boolean claimed = vciCacheService.claimPreAuthCode(request.getPre_authorized_code());
-        if (!claimed) {
-            log.error("Pre-authorized code already used or invalid");
-            throw new CertifyException(ErrorConstants.INVALID_GRANT, "Pre-authorized code has already been used  or invalid");
-        }
+        if (codeData == null) throw new CertifyException(ErrorConstants.INVALID_GRANT, "Invalid or consumed pre-authorized code");
 
         // Check expiry
         long currentTime = System.currentTimeMillis();
-        if (codeData.getExpiresAt() < currentTime) {
+        if (codeData.getExpiresAt() <= currentTime) {
             log.error("Pre-authorized code expired. Expiry: {}, Current: {}", codeData.getExpiresAt(), currentTime);
             throw new CertifyException("pre_auth_code_expired", "Pre-authorized code has expired");
         }
@@ -381,6 +393,14 @@ public class PreAuthorizedCodeService {
             log.error("Transaction code mismatch");
             throw new CertifyException("tx_code_mismatch", "Transaction code does not match");
         }
+
+        // Atomically claim the pre-authorized code
+        boolean claimed = vciCacheService.claimPreAuthCode(request.getPre_authorized_code());
+        if (!claimed) {
+            log.error("Pre-authorized code already used or invalid");
+            throw new CertifyException(ErrorConstants.INVALID_GRANT, "Pre-authorized code has already been used  or invalid");
+        }
+
     }
 
     /**
@@ -389,7 +409,8 @@ public class PreAuthorizedCodeService {
      */
     private String generateAccessToken(PreAuthCodeData codeData, String cNonce) {
         try {
-            String claimsJson = objectMapper.writeValueAsString(codeData.getClaims());
+            String claimsJson = selectedDataProvider instanceof LookupDataProviderPlugin
+                    ? UUID.randomUUID().toString() : objectMapper.writeValueAsString(codeData.getClaims());
             String credentialConfigId = codeData.getCredentialConfigurationId();
 
             // Lookup credential configuration in database

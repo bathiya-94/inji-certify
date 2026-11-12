@@ -6,6 +6,7 @@
 package io.mosip.certify.core.dto;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
 
 @Data
@@ -42,4 +43,12 @@ public class CredentialResponse<T> {
      */
     @JsonInclude(JsonInclude.Include.NON_NULL)
     private Integer c_nonce_expires_in;
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    @JsonProperty("credential_qr")
+    private CredentialQr credentialQr;
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    @JsonProperty("credential_qr_error")
+    private String credentialQrError;
 }

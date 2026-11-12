@@ -45,39 +45,29 @@ public class BitStringStatusListUtilsTest {
     }
 
     @Test
-    public void updateEncodedList_WithIndexOutOfBounds_LogsWarningAndContinues() {
+    public void updateEncodedList_WithIndexOutOfBounds_Throws() {
         String existingEncodedList = BitStringStatusListUtils.createEmptyEncodedList(16L);
         Map<Long, Boolean> statusMap = new HashMap<>();
         statusMap.put(200000L, true);
         statusMap.put(1L, true);
 
-        String result = BitStringStatusListUtils.updateEncodedList(existingEncodedList, statusMap, 16L);
-
-        assertNotNull(result);
-        assertNotEquals(existingEncodedList, result);
-
-        Map<Long, Boolean> toggleMap = new HashMap<>();
-        toggleMap.put(1L, false);
-        String toggledResult = BitStringStatusListUtils.updateEncodedList(result, toggleMap, 16L);
-        assertNotEquals(result, toggledResult);
+        // An invalid position must fail the update, never be skipped: a skipped revocation would stay valid.
+        CertifyException error = assertThrows(CertifyException.class,
+                () -> BitStringStatusListUtils.updateEncodedList(existingEncodedList, statusMap, 16L));
+        assertEquals(io.mosip.certify.core.constants.ErrorConstants.INDEX_OUT_OF_BOUNDS, error.getErrorCode());
     }
 
     @Test
-    public void updateEncodedList_WithNegativeIndex_LogsWarningAndContinues() {
+    public void updateEncodedList_WithNegativeIndex_Throws() {
         String existingEncodedList = BitStringStatusListUtils.createEmptyEncodedList(16L);
         Map<Long, Boolean> statusMap = new HashMap<>();
         statusMap.put(-1L, true);
         statusMap.put(1L, true);
 
-        String result = BitStringStatusListUtils.updateEncodedList(existingEncodedList, statusMap, 16L);
-
-        assertNotNull(result);
-        assertNotEquals(existingEncodedList, result);
-
-        Map<Long, Boolean> toggleMap = new HashMap<>();
-        toggleMap.put(1L, false);
-        String toggledResult = BitStringStatusListUtils.updateEncodedList(result, toggleMap, 16L);
-        assertNotEquals(result, toggledResult);
+        // An invalid position must fail the update, never be skipped: a skipped revocation would stay valid.
+        CertifyException error = assertThrows(CertifyException.class,
+                () -> BitStringStatusListUtils.updateEncodedList(existingEncodedList, statusMap, 16L));
+        assertEquals(io.mosip.certify.core.constants.ErrorConstants.INDEX_OUT_OF_BOUNDS, error.getErrorCode());
     }
 
     @Test(expected = CertifyException.class)

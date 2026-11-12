@@ -54,4 +54,8 @@ public class CredentialRequest {
     private Map<String,Object> claims;
 
     String vct;
+
+    /** Optional custom extension: encode the complete signed ldp_vc with PixelPass. */
+    @JsonProperty("include_credential_qr")
+    private Boolean includeCredentialQr;
 }

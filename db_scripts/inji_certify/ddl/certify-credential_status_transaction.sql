@@ -38,3 +38,13 @@ COMMENT ON COLUMN credential_status_transaction.is_processed IS 'Indicates if th
 
 -- Create indexes for credential_status_transaction
 CREATE INDEX IF NOT EXISTS idx_cst_is_processed_created ON certify.credential_status_transaction (is_processed, cr_dtimes);
+
+-- One true revocation per status list position. Other purposes (e.g. suspension) are not restricted.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_cst_true_revocation
+    ON certify.credential_status_transaction (status_list_credential_id, status_list_index, status_purpose)
+    WHERE status_value = TRUE AND status_purpose = 'revocation';
+
+-- Ordered pending work per status list for the publication job.
+CREATE INDEX IF NOT EXISTS idx_cst_pending_by_list
+    ON certify.credential_status_transaction (status_list_credential_id, cr_dtimes, transaction_log_id)
+    WHERE is_processed = FALSE;

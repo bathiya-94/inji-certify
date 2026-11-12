@@ -1,105 +1,88 @@
 package io.mosip.certify.services;
 
+import io.mosip.certify.core.constants.ErrorConstants;
 import io.mosip.certify.core.exception.CertifyException;
-import io.mosip.certify.entity.StatusListAvailableIndices;
-import io.mosip.certify.entity.StatusListCredential;
-import io.mosip.certify.repository.StatusListAvailableIndicesRepository;
-import io.mosip.certify.repository.StatusListCredentialRepository;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
-
+import io.mosip.certify.entity.StatusListAllocation;
+import io.mosip.certify.repository.StatusListAllocationRepository;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.Query;
-import java.math.BigInteger;
-import java.time.LocalDateTime;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.interceptor.TransactionAspectSupport;
+
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+/**
+ * Claims one random free position of a status list and counts it against the list's allocation limit in
+ * the same transaction. The position row lock ({@code FOR UPDATE SKIP LOCKED}) prevents two requests
+ * from taking the same position; the conditional counter update enforces the limit exactly.
+ */
 @Slf4j
 @Service
 public class DatabaseStatusListIndexProvider implements StatusListIndexProvider {
 
     @Autowired
-    private StatusListAvailableIndicesRepository statusListAvailableIndicesRepository;
-
-    @Autowired
-    private StatusListCredentialRepository statusListCredentialRepository;
+    private StatusListAllocationRepository allocationRepository;
 
     @Autowired
     private EntityManager entityManager;
-
-    @Value("${mosip.certify.statuslist.usable-capacity-percentage:50}")
-    private int usableCapacityPercentage;
 
     @Override
     public String getProviderName() {
         return "DatabaseRandomAvailableIndexProvider";
     }
 
+    /**
+     * Runs in its own transaction so that a rejected counter update rolls back the claimed position
+     * without affecting the caller.
+     *
+     * @return the claim, or empty when the list is closed or exhausted. Any other failure is thrown.
+     */
     @Override
-    @Transactional
-    public Optional<Long> acquireIndex(String listId, Map<String, Object> options) {
-        log.debug("Attempting to acquire index for status list: {}", listId);
+    @Transactional(propagation = Propagation.REQUIRES_NEW, isolation = Isolation.READ_COMMITTED)
+    public Optional<IndexClaim> acquireIndex(String listId, Map<String, Object> options) {
+        Long claimedIndex = claimRandomPosition(listId);
 
-        try {
-            // 1. Get status list and its capacity
-            Optional<StatusListCredential> statusListOpt = statusListCredentialRepository.findById(listId);
-            if (statusListOpt.isEmpty()) {
-                log.error("Status list not found: {}", listId);
+        if (claimedIndex == null) {
+            // Nothing was claimed. Only the allocation state can say whether the list is really full.
+            StatusListAllocation allocation = allocationRepository.findById(listId)
+                    .orElseThrow(() -> new CertifyException(ErrorConstants.STATUS_LIST_INDEX_UNAVAILABLE,
+                            "No allocation record for status list " + listId));
+            if (!Boolean.TRUE.equals(allocation.getIsActive())
+                    || allocation.getAllocatedCount() >= allocation.getAllocationLimit()) {
+                log.info("Status list {} is closed ({}/{})", listId, allocation.getAllocatedCount(), allocation.getAllocationLimit());
                 return Optional.empty();
             }
+            // Capacity remains but every free position is locked by other requests: a retryable condition.
+            throw new CertifyException(ErrorConstants.STATUS_LIST_INDEX_UNAVAILABLE,
+                    "No free position could be claimed in status list " + listId + ", please retry");
+        }
 
-            StatusListCredential statusList = statusListOpt.get();
-            long physicalCapacity = statusList.getCapacityInKB()*1024L*8L; // Convert KB to bits
-
-            // 2. Calculate effective threshold based on usable capacity
-            long effectiveThresholdCount = (long) Math.floor(physicalCapacity * (usableCapacityPercentage / 100.0));
-
-            // 3. Check current assigned count
-            long currentAssignedCount = statusListAvailableIndicesRepository
-                    .countByStatusListCredentialIdAndIsAssignedTrue(listId);
-
-            if (currentAssignedCount >= effectiveThresholdCount) {
-                log.warn("Status list {} has reached usable capacity limit ({}/{})",
-                        listId, currentAssignedCount, effectiveThresholdCount);
-
-                // Mark status list as full
-                statusList.setCredentialStatus(StatusListCredential.CredentialStatus.FULL);
-                statusListCredentialRepository.save(statusList);
-
-                return Optional.empty();
-            }
-
-            // 4. Attempt to atomically claim an index using native query
-            Long claimedIndex = atomicallyClaimIndex(listId);
-
-            if (claimedIndex != null) {
-                log.info("Successfully claimed index {} for status list: {}", claimedIndex, listId);
-                return Optional.of(claimedIndex);
-            } else {
-                log.warn("Failed to claim any available index for status list: {}", listId);
-                return Optional.empty();
-            }
-
-        } catch (Exception e) {
-            log.error("Error acquiring index for status list: {}", listId, e);
+        Object[] counter = incrementAllocation(listId);
+        if (counter == null) {
+            // Another request took the last allocation first. Undo this request's position claim.
+            TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
+            log.info("Status list {} closed while claiming position {}; claim rolled back", listId, claimedIndex);
             return Optional.empty();
         }
+        boolean stillActive = (Boolean) counter[2];
+        log.debug("Claimed position {} in status list {} ({} of {})", claimedIndex, listId, counter[0], counter[1]);
+        return Optional.of(new IndexClaim(claimedIndex, !stillActive));
     }
 
-    /**
-     * Atomically claim an available index using database skip lock mechanism
-     */
-    private Long atomicallyClaimIndex(String listId) {
-        try {
-            String sql = """
+    /** Claims a random unassigned position using the database lock-skipping mechanism. */
+    private Long claimRandomPosition(String listId) {
+        String sql = """
                 WITH available_slot AS (
                     SELECT list_index
                     FROM status_list_available_indices
-                    WHERE status_list_credential_id = :listId 
+                    WHERE status_list_credential_id = :listId
                         AND is_assigned = false
                     ORDER BY RANDOM()
                     LIMIT 1
@@ -114,27 +97,36 @@ public class DatabaseStatusListIndexProvider implements StatusListIndexProvider 
                     AND sla.is_assigned = false
                 RETURNING sla.list_index
                 """;
+        Query query = entityManager.createNativeQuery(sql);
+        query.setParameter("listId", listId);
+        List<?> rows = query.getResultList();
+        return rows.isEmpty() ? null : ((Number) rows.get(0)).longValue();
+    }
 
-            Query query = entityManager.createNativeQuery(sql);
-            query.setParameter("listId", listId);
-
-            Object result = query.getSingleResult();
-
-            if (result != null) {
-                if (result instanceof BigInteger) {
-                    return ((BigInteger) result).longValue();
-                } else if (result instanceof Long) {
-                    return (Long) result;
-                } else if (result instanceof Integer) {
-                    return ((Integer) result).longValue();
-                }
-            }
-
-            return null;
-
-        } catch (Exception e) {
-            log.debug("No available index found or error in atomic claim for list: {}", listId);
+    /**
+     * Counts one allocation, only while the list is active and below its stored limit. Closes the list
+     * in the same statement when this allocation reaches the limit.
+     *
+     * @return {allocated_count, allocation_limit, is_active}, or null when the list is not accepting allocations
+     */
+    private Object[] incrementAllocation(String listId) {
+        String sql = """
+                UPDATE status_list_allocation
+                SET allocated_count = allocated_count + 1,
+                    is_active = (allocated_count + 1 < allocation_limit),
+                    upd_dtimes = NOW()
+                WHERE status_list_credential_id = :listId
+                    AND is_active
+                    AND allocated_count < allocation_limit
+                RETURNING allocated_count, allocation_limit, is_active
+                """;
+        Query query = entityManager.createNativeQuery(sql);
+        query.setParameter("listId", listId);
+        List<?> rows = query.getResultList();
+        if (rows.isEmpty()) {
             return null;
         }
+        Object[] row = (Object[]) rows.get(0);
+        return new Object[]{((Number) row[0]).longValue(), ((Number) row[1]).longValue(), row[2]};
     }
 }

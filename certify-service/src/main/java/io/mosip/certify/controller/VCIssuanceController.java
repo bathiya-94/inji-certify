@@ -7,9 +7,12 @@ package io.mosip.certify.controller;
 
 import io.mosip.certify.core.dto.*;
 import io.mosip.certify.core.exception.CertifyException;
+import io.mosip.certify.core.exception.InvalidRequestException;
+import io.mosip.certify.core.constants.VCIErrorConstants;
 import io.mosip.certify.core.spi.CredentialConfigurationService;
 import io.mosip.certify.core.spi.VCIssuanceService;
 import io.mosip.certify.exception.InvalidNonceException;
+import io.mosip.certify.services.CredentialQrService;
 import jakarta.validation.Valid;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -31,6 +34,9 @@ public class VCIssuanceController {
     private VCIssuanceService vcIssuanceService;
 
     @Autowired
+    private CredentialQrService credentialQrService;
+
+    @Autowired
     private CredentialConfigurationService credentialConfigurationService;
 
     @Autowired
@@ -45,7 +51,7 @@ public class VCIssuanceController {
     @PostMapping(value = "/credential",produces = "application/json")
     public CredentialResponse getCredential(@Valid @RequestBody CredentialRequest credentialRequest) throws CertifyException {
         log.info("Get credential request received for format: {}", credentialRequest.getFormat());
-        return vcIssuanceService.getCredential(credentialRequest);
+        return issueCredential(credentialRequest);
     }
 
     /**
@@ -56,7 +62,7 @@ public class VCIssuanceController {
      */
     @PostMapping(value = "/vd12/credential",produces = "application/json")
     public CredentialResponse getCredentialV12Draft(@Valid @RequestBody CredentialRequest credentialRequest) throws CertifyException {
-        CredentialResponse credentialResponse = vcIssuanceService.getCredential(credentialRequest);
+        CredentialResponse credentialResponse = issueCredential(credentialRequest);
         credentialResponse.setFormat(credentialRequest.getFormat());
         return credentialResponse;
     }
@@ -70,10 +76,29 @@ public class VCIssuanceController {
      */
     @PostMapping(value = "/vd11/credential",produces = "application/json")
     public CredentialResponse getCredentialV11Draft(@Valid @RequestBody CredentialRequest credentialRequest) throws CertifyException {
-        CredentialResponse credentialResponse = vcIssuanceService.getCredential(credentialRequest);
+        CredentialResponse credentialResponse = issueCredential(credentialRequest);
         credentialResponse.setFormat(credentialRequest.getFormat());
         return credentialResponse;
     }
+    private CredentialResponse issueCredential(CredentialRequest request) throws CertifyException {
+        boolean includeQr = Boolean.TRUE.equals(request.getIncludeCredentialQr());
+        if (includeQr && !"ldp_vc".equals(request.getFormat())) {
+            throw new InvalidRequestException(VCIErrorConstants.UNSUPPORTED_CREDENTIAL_FORMAT);
+        }
+        CredentialResponse response = vcIssuanceService.getCredential(request);
+        if (includeQr && response.getCredential() != null) {
+            try {
+                response.setCredentialQr(credentialQrService.encode(response.getCredential()));
+            } catch (Exception exception) {
+                // Issuance has succeeded. Preserve the VC and never repeat issuance for a QR failure.
+                // Do not log exception messages: serializers can include credential values.
+                log.warn("Credential issued successfully; QR encoding failed");
+                response.setCredentialQrError("encoding_failed");
+            }
+        }
+        return response;
+    }
+
     /**
      * Open endpoint to provide VC issuer's metadata
      * @return

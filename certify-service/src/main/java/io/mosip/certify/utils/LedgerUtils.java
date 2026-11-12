@@ -3,9 +3,11 @@ package io.mosip.certify.utils;
 import com.jayway.jsonpath.Configuration;
 import com.jayway.jsonpath.JsonPath;
 import com.jayway.jsonpath.Option;
-import io.mosip.certify.config.IndexedAttributesConfig;
+import io.mosip.certify.services.IndexedAttributePolicy;
 import io.mosip.certify.core.constants.Constants;
 import io.mosip.certify.core.dto.CredentialStatusDetail;
+import io.mosip.certify.core.constants.ErrorConstants;
+import io.mosip.certify.core.exception.CertifyException;
 import lombok.extern.slf4j.Slf4j;
 import org.json.JSONObject;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -18,7 +20,7 @@ import java.util.*;
 public class LedgerUtils {
 
     @Autowired
-    private IndexedAttributesConfig indexedAttributesConfig;
+    private IndexedAttributePolicy indexedAttributePolicy;
 
     /**
      * Process extracted values to handle complex types appropriately
@@ -67,7 +69,7 @@ public class LedgerUtils {
             return indexedAttributes;
         }
 
-        Map<String, String> indexedMappings = indexedAttributesConfig.getIndexedMappings();
+        Map<String, String> indexedMappings = indexedAttributePolicy.mappingsFor(extractCredentialType(jsonObject));
         if(indexedMappings.isEmpty()) {
             log.info("No indexed mappings configured, returning empty attributes");
             return indexedAttributes;
@@ -93,6 +95,10 @@ public class LedgerUtils {
                 }
             }
 
+            if (DOCUMENT_ID.equals(targetKey)) {
+                indexedAttributes.put(DOCUMENT_ID, requireDocumentId(extractedValue));
+                continue;
+            }
             if (extractedValue != null) {
                 Object processedValue = processExtractedIndexedAttributes(extractedValue);
                 if (processedValue != null) {
@@ -104,6 +110,20 @@ public class LedgerUtils {
             }
         }
         return indexedAttributes;
+    }
+
+    /** The source document's business identifier. Stored as a plain string so leading zeros survive. */
+    static final String DOCUMENT_ID = "document_id";
+
+    private static String requireDocumentId(Object value) {
+        if (value instanceof String text && !text.isBlank()) {
+            return text.trim();
+        }
+        if (value instanceof Number || value instanceof Boolean) {
+            return value.toString();
+        }
+        throw new CertifyException(ErrorConstants.INVALID_PROVIDER_DATA,
+                "The configured document_id mapping did not resolve to a non-blank scalar value.");
     }
 
     private Object processExtractedIndexedAttributes(Object extractedValue) {

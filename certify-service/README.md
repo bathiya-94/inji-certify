@@ -10,6 +10,24 @@
 - Simplifies deployment by separating service core from plugin dependencies.
 
 ## Installation & Deployment
+### Local logging
+With the `local` Spring profile active, logs are written to both the console and
+`logs/inji-certify.log`, relative to the application's working directory.
+Restart the service after changing logging properties.
+
+Follow the log from that working directory:
+```sh
+tail -f logs/inji-certify.log
+```
+
+Log files rotate daily or at 10 MB and are compressed. Archives are retained for
+up to 7 days, subject to a 100 MB archive size cap. The `logs/` directory is
+excluded from Git.
+
+Set `LOGGING_FILE_NAME` to override the file path. For additional Certify logging,
+set `LOGGING_LEVEL_IO_MOSIP_CERTIFY=DEBUG` before starting the service, or change
+`logging.level.io.mosip.certify` in `src/main/resources/application-local.properties`.
+
 ### Prerequisites
 - Docker installed on the system.
 - Docker image for certify-service built or pulled from the registry.

@@ -1,5 +1,6 @@
 # Log file
 *.log
+logs/
 
 # BlueJ files
 *.ctxt
@@ -20,6 +21,8 @@
 hs_err_pid*
 
 # other directories
+.codex/
+.vscode/
 target/
 .idea/
 *.p12

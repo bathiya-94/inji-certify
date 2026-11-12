@@ -408,12 +408,12 @@ public class PreAuthorizedCodeServiceTest {
                 .build();
 
         when(vciCacheService.getPreAuthCodeData(preAuthCode)).thenReturn(codeData);
-        when(vciCacheService.claimPreAuthCode(preAuthCode)).thenReturn(true);
 
         CertifyException exception = assertThrows(CertifyException.class,
                 () -> preAuthorizedCodeService.exchangePreAuthorizedCode(tokenRequest));
 
         Assert.assertEquals("pre_auth_code_expired", exception.getErrorCode());
+        verify(vciCacheService, never()).claimPreAuthCode(anyString());
     }
 
     @Test
@@ -453,12 +453,12 @@ public class PreAuthorizedCodeServiceTest {
                 .build();
 
         when(vciCacheService.getPreAuthCodeData(preAuthCode)).thenReturn(codeData);
-        when(vciCacheService.claimPreAuthCode(preAuthCode)).thenReturn(true);
 
         CertifyException exception = assertThrows(CertifyException.class,
                 () -> preAuthorizedCodeService.exchangePreAuthorizedCode(tokenRequest));
 
         Assert.assertEquals("tx_code_required", exception.getErrorCode());
+        verify(vciCacheService, never()).claimPreAuthCode(anyString());
     }
 
     @Test
@@ -477,11 +477,40 @@ public class PreAuthorizedCodeServiceTest {
                 .build();
 
         when(vciCacheService.getPreAuthCodeData(preAuthCode)).thenReturn(codeData);
-        when(vciCacheService.claimPreAuthCode(preAuthCode)).thenReturn(true);
 
         CertifyException exception = assertThrows(CertifyException.class,
                 () -> preAuthorizedCodeService.exchangePreAuthorizedCode(tokenRequest));
 
         Assert.assertEquals("tx_code_mismatch", exception.getErrorCode());
+        verify(vciCacheService, never()).claimPreAuthCode(anyString());
     }
+    @Test
+    public void routerUsesLookupValidatorAndOpaqueTokenSubject() throws Exception {
+        io.mosip.certify.api.spi.LookupDataProviderPlugin router = mock(io.mosip.certify.api.spi.LookupDataProviderPlugin.class);
+        PreAuthCallerAuthorizer authorizer = mock(PreAuthCallerAuthorizer.class);
+        ReflectionTestUtils.setField(preAuthorizedCodeService, "selectedDataProvider", router);
+        ReflectionTestUtils.setField(preAuthorizedCodeService, "callerAuthorizer", authorizer);
+        request.setClaims(new HashMap<>(Map.of("vehicle_number", "TEST", "issued_date", "2026-10-16T14:30:00")));
+        preAuthorizedCodeService.generatePreAuthorizedCode(request);
+        verify(router).validateLookup(eq(CONFIG_ID), eq(request.getClaims()));
+        verify(authorizer).authorize(CONFIG_ID);
+        org.mockito.ArgumentCaptor<PreAuthCodeData> saved = org.mockito.ArgumentCaptor.forClass(PreAuthCodeData.class);
+        verify(vciCacheService).setPreAuthCodeData(anyString(), saved.capture());
+        request.getClaims().put("vehicle_number", "CHANGED");
+        Assert.assertEquals("TEST", saved.getValue().getClaims().get("vehicle_number"));
+        when(vciCacheService.getPreAuthCodeData("code")).thenReturn(saved.getValue());
+        when(vciCacheService.claimPreAuthCode("code")).thenReturn(true);
+        when(accessTokenJwtUtil.generateCNonce()).thenReturn("nonce");
+        when(accessTokenJwtUtil.generateSignedJwt(anyString(), anyString(), anyString(), anyString(), anyString(), anyInt(), anyString())).thenReturn("signed.jwt.token");
+        OAuthTokenRequest token = new OAuthTokenRequest();
+        token.setGrant_type(Constants.PRE_AUTHORIZED_CODE_GRANT_TYPE); token.setPre_authorized_code("code");
+        preAuthorizedCodeService.exchangePreAuthorizedCode(token);
+        org.mockito.ArgumentCaptor<String> subject = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(accessTokenJwtUtil).generateSignedJwt(subject.capture(), anyString(), anyString(), anyString(), anyString(), anyInt(), anyString());
+        Assert.assertEquals(UUID.fromString(subject.getValue()).toString(), subject.getValue());
+        org.mockito.ArgumentCaptor<VCIssuanceTransaction> transaction = org.mockito.ArgumentCaptor.forClass(VCIssuanceTransaction.class);
+        verify(vciCacheService).setVCITransaction(anyString(), transaction.capture());
+        Assert.assertEquals("TEST", ((PreAuthTransaction) transaction.getValue()).getClaims().get("vehicle_number"));
+    }
+
 }

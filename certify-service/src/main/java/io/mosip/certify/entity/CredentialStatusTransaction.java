@@ -45,7 +45,7 @@ public class CredentialStatusTransaction {
 
     @PrePersist
     protected void onCreate() {
-        createdDtimes = LocalDateTime.now();
+        createdDtimes = LocalDateTime.now(java.time.ZoneOffset.UTC);
         if (isProcessed == null) {
             isProcessed = Boolean.FALSE;
         }

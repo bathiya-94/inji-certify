@@ -8,6 +8,10 @@ import io.mosip.certify.core.spi.CredentialLedgerService;
 import io.mosip.certify.entity.Ledger;
 import io.mosip.certify.core.dto.CredentialStatusDetail;
 import io.mosip.certify.repository.LedgerRepository;
+import io.mosip.certify.config.LedgerSearchProperties;
+import io.mosip.certify.core.dto.LedgerSearchResult;
+import io.mosip.certify.exception.ManagementApiException;
+import org.springframework.http.HttpStatus;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -26,13 +30,79 @@ public class CredentialLedgerServiceImpl implements CredentialLedgerService {
     @Autowired
     private LedgerRepository ledgerRepository;
 
+    @Autowired
+    private LedgerSearchProperties searchProperties;
+
+    @Autowired
+    private IndexedAttributePolicy indexedAttributePolicy;
+
     @Override
-    public List<CredentialStatusResponse> searchCredentialLedger(CredentialLedgerSearchRequest request) {
-        validateSearchRequest(request);
+    public LedgerSearchResult<CredentialStatusResponse> searchCredentialLedger(CredentialLedgerSearchRequest request) {
+        return search(request, false);
+    }
+
+    @Override
+    public LedgerSearchResult<CredentialStatusResponse> searchCredentialLedgerV2(CredentialLedgerSearchRequest request) {
+        return search(request, true);
+    }
+
+    private LedgerSearchResult<CredentialStatusResponse> search(CredentialLedgerSearchRequest request, boolean isV2) {
+        validateFilters(request);
+        boolean paginated = request.isPaginationRequested();
+        int limit = paginated ? (request.getLimit() != null ? request.getLimit() : searchProperties.getDefaultLimit())
+                : searchProperties.getLegacyLimit();
+        int offset = paginated && request.getOffset() != null ? request.getOffset() : 0;
+        if (paginated) {
+            validatePaging(limit, offset);
+        }
+
+        List<Ledger> rows;
         try {
-            return mapRecordsToResponses(request, false);
+            // One extra row tells whether more matches exist, without a count query.
+            rows = ledgerRepository.findBySearchRequest(request, limit + 1, offset);
         } catch (Exception e) {
             throw new CertifyException(ErrorConstants.SEARCH_CREDENTIALS_FAILED, "Failed to search credentials.");
+        }
+        if (rows == null) {
+            throw new CertifyException(ErrorConstants.SEARCH_CREDENTIALS_FAILED, "Failed to search credentials.");
+        }
+
+        boolean hasMore = rows.size() > limit;
+        if (hasMore && !paginated) {
+            throw new ManagementApiException(HttpStatus.BAD_REQUEST, ErrorConstants.PAGINATION_REQUIRED,
+                    "More than " + limit + " credentials match. Send limit and offset to read them page by page, "
+                            + "or narrow the search, for example with document_id.");
+        }
+        List<Ledger> page = hasMore ? rows.subList(0, limit) : rows;
+        return new LedgerSearchResult<>(mapRecordsToResponses(page, isV2), hasMore, paginated);
+    }
+
+    private void validateFilters(CredentialLedgerSearchRequest request) {
+        boolean hasCredentialId = request.getCredentialId() != null && !request.getCredentialId().isBlank();
+        Map<String, String> filters = request.getIndexedAttributesEquals();
+        boolean hasFilters = filters != null && !filters.isEmpty();
+        if (!hasCredentialId && !hasFilters) {
+            throw new ManagementApiException(HttpStatus.BAD_REQUEST, ErrorConstants.INVALID_SEARCH_CRITERIA,
+                    "Provide credentialId or at least one exact-match entry in indexedAttributesEquals.");
+        }
+        String problem = indexedAttributePolicy.firstProblem(request.getCredentialType(), filters);
+        if (problem != null) {
+            throw new ManagementApiException(HttpStatus.BAD_REQUEST, ErrorConstants.INVALID_SEARCH_CRITERIA, problem);
+        }
+    }
+
+    private void validatePaging(int limit, int offset) {
+        if (limit < 1 || limit > searchProperties.getMaxLimit()) {
+            throw new ManagementApiException(HttpStatus.BAD_REQUEST, ErrorConstants.INVALID_REQUEST,
+                    "limit must be between 1 and " + searchProperties.getMaxLimit() + ".");
+        }
+        if (offset < 0) {
+            throw new ManagementApiException(HttpStatus.BAD_REQUEST, ErrorConstants.INVALID_REQUEST, "offset must not be negative.");
+        }
+        if (offset > searchProperties.getMaxOffset()) {
+            throw new ManagementApiException(HttpStatus.BAD_REQUEST, ErrorConstants.SEARCH_WINDOW_EXCEEDED,
+                    "offset must not exceed " + searchProperties.getMaxOffset()
+                            + ". Narrow the search, for example by adding document_id.");
         }
     }
 
@@ -59,33 +129,9 @@ public class CredentialLedgerServiceImpl implements CredentialLedgerService {
         return response;
     }
 
-    private void validateSearchRequest(CredentialLedgerSearchRequest request) {
-        Map<String, String> indexedAttrs = request.getIndexedAttributesEquals();
-
-        boolean hasValid = indexedAttrs != null && !indexedAttrs.isEmpty() &&
-                indexedAttrs.entrySet().stream()
-                        .anyMatch(e -> e.getKey() != null && !e.getKey().isBlank()
-                                && e.getValue() != null && !e.getValue().isBlank());
-
-        if (!hasValid) {
-            throw new CertifyException(ErrorConstants.INVALID_SEARCH_CRITERIA, "Invalid search criteria provided.");
-        }
-    }
-
-    @Override
-    public List<CredentialStatusResponse> searchCredentialLedgerV2(CredentialLedgerSearchRequest request) {
-        validateSearchRequest(request);
-        try {
-            return mapRecordsToResponses(request, true);
-
-        } catch (Exception e) {
-            throw new CertifyException(ErrorConstants.SEARCH_CREDENTIALS_FAILED, "Failed to search credentials.");
-        }
-    }
-
     @Transactional
     @Override
-    public void storeLedgerEntry(String credentialId, String issuerId, String credentialType, CredentialStatusDetail statusDetails, Map<String, Object> indexedAttributes, LocalDateTime issuanceDate) {
+    public void storeLedgerEntry(String credentialId, String issuerId, String credentialType, CredentialStatusDetail statusDetails, Map<String, Object> indexedAttributes, LocalDateTime issuanceDate, LocalDateTime expirationDate) {
         try {
             Ledger ledger = new Ledger();
             if(credentialId != null) {
@@ -93,6 +139,7 @@ public class CredentialLedgerServiceImpl implements CredentialLedgerService {
             }
             ledger.setIssuerId(issuerId);
             ledger.setIssuanceDate(issuanceDate);
+            ledger.setExpirationDate(expirationDate);
             ledger.setCredentialType(credentialType);
             ledger.setIndexedAttributes(indexedAttributes);
 
@@ -110,9 +157,7 @@ public class CredentialLedgerServiceImpl implements CredentialLedgerService {
         }
     }
 
-    private List<CredentialStatusResponse> mapRecordsToResponses(CredentialLedgerSearchRequest request, boolean isV2) {
-        List<Ledger> records = ledgerRepository.findBySearchRequest(request);
-
+    private List<CredentialStatusResponse> mapRecordsToResponses(List<Ledger> records, boolean isV2) {
         if (records.isEmpty()) {
             return Collections.emptyList();
         }
