@@ -8,7 +8,11 @@ import io.mosip.certify.core.constants.VCIErrorConstants;
 import io.mosip.certify.core.exception.CertifyException;
 import io.mosip.certify.credential.Credential;
 import io.mosip.certify.credential.CredentialFactory;
+import io.mosip.certify.config.StatusListPublicationProperties;
 import io.mosip.certify.entity.StatusListCredential;
+import io.mosip.certify.exception.ManagementApiException;
+import io.mosip.certify.repository.CredentialStatusTransactionRepository;
+import org.springframework.http.HttpStatus;
 import io.mosip.certify.repository.StatusListCredentialRepository;
 import io.mosip.certify.utils.BitStringStatusListUtils;
 import io.mosip.certify.vcformatters.VCFormatter;
@@ -21,6 +25,7 @@ import org.json.JSONException;
 import org.json.JSONObject;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -45,7 +50,14 @@ public class StatusListCredentialService {
     private CredentialFactory credentialFactory;
 
     @Autowired
-    private DatabaseStatusListIndexProvider indexProvider;
+    @Lazy
+    private StatusListAllocationService allocationService;
+
+    @Autowired
+    private StatusListPublicationProperties publicationProperties;
+
+    @Autowired
+    private CredentialStatusTransactionRepository transactionRepository;
 
     @PersistenceContext
     private EntityManager entityManager;
@@ -87,6 +99,54 @@ public class StatusListCredentialService {
         } catch (Exception e) {
             log.error("Unexpected error retrieving status list credential with ID: {}", id, e);
             throw new CertifyException(ErrorConstants.STATUS_RETRIEVAL_ERROR);
+        }
+    }
+
+    /** A published status list for the public GET together with the validator caches use to revalidate it. */
+    public record PublishedStatusList(String body, String etag) {
+    }
+
+    /**
+     * The list to serve to verifiers. A list with a revocation that has waited too long to be published is
+     * refused instead of being served as current: a verifier that trusted it would accept revoked credentials.
+     *
+     * @throws ManagementApiException 404 when the list does not exist, 503 when it is stale
+     */
+    public PublishedStatusList getPublishedStatusList(String id) {
+        StatusListCredential statusList = findStatusListById(id)
+                .orElseThrow(() -> new ManagementApiException(HttpStatus.NOT_FOUND, ErrorConstants.STATUS_LIST_NOT_FOUND,
+                        "Status list not found."));
+        Optional<LocalDateTime> oldestPending = transactionRepository.findOldestPendingTime(id);
+        if (oldestPending.isPresent()) {
+            long waitedSeconds = java.time.Duration.between(oldestPending.get(), LocalDateTime.now(java.time.ZoneOffset.UTC)).toSeconds();
+            if (waitedSeconds > publicationProperties.getMaxUnpublishedAgeSeconds()) {
+                log.error("Status list {} has a change unpublished for {}s (limit {}s); refusing to serve it as current",
+                        id, waitedSeconds, publicationProperties.getMaxUnpublishedAgeSeconds());
+                throw new ManagementApiException(HttpStatus.SERVICE_UNAVAILABLE, ErrorConstants.STATUS_LIST_UNAVAILABLE,
+                        "The status list is being updated. Try again shortly.");
+            }
+        }
+        String body = statusList.getVcDocument();
+        return new PublishedStatusList(body, strongEtag(body));
+    }
+
+    /**
+     * A UTC timestamp in the one format the signer reads ({@code yyyy-MM-dd'T'HH:mm:ss.SSS'Z'}). Never use
+     * {@code Instant.toString()} for a signed date: it prints microseconds, or no fraction at all when the
+     * milliseconds are zero, and the signer rejects both.
+     */
+    static String utcTimestamp(java.time.Instant instant) {
+        return java.time.format.DateTimeFormatter.ofPattern(io.mosip.certify.core.constants.Constants.UTC_DATETIME_PATTERN)
+                .withZone(java.time.ZoneOffset.UTC).format(instant);
+    }
+
+    /** A strong validator: a hash of the exact bytes served, so it changes only when the published list changes. */
+    static String strongEtag(String body) {
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(body.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return "\"" + java.util.HexFormat.of().formatHex(digest) + "\"";
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
         }
     }
 
@@ -146,12 +206,13 @@ public class StatusListCredentialService {
 
             statusListData.put("id", statusListId);
             statusListData.put("issuer", didUrl);
-            statusListData.put("validFrom", new Date().toInstant().toString());
+            statusListData.put("validFrom", utcTimestamp(java.time.Instant.now()));
 
             JSONObject credentialSubject = new JSONObject();
             credentialSubject.put("id", statusListId);
             credentialSubject.put("type", "BitstringStatusList");
             credentialSubject.put("statusPurpose", statusPurpose);
+            credentialSubject.put("ttl", publicationProperties.getTtlMs());
 
             // Create empty encoded list (all 0s)
             String encodedList = BitStringStatusListUtils.createEmptyEncodedList(statusListSizeInKB);
@@ -171,7 +232,7 @@ public class StatusListCredentialService {
             statusListCredential.setStatusPurpose(statusPurpose);
             statusListCredential.setCapacityInKB(statusListSizeInKB);
             statusListCredential.setCredentialStatus(StatusListCredential.CredentialStatus.AVAILABLE);
-            statusListCredential.setCreatedDtimes(LocalDateTime.now());
+            statusListCredential.setCreatedDtimes(LocalDateTime.now(java.time.ZoneOffset.UTC));
 
             // Save to database
             StatusListCredential savedCredential = statusListCredentialRepository.saveAndFlush(statusListCredential);
@@ -223,36 +284,6 @@ public class StatusListCredentialService {
         }
     }
 
-    /**
-     * Find or create a suitable status list for the given purpose
-     * If no suitable status list exists, a new one will be created
-     *
-     * @param statusPurpose the purpose of the status list
-     * @return StatusListCredential that can be used for the given purpose
-     */
-    @Transactional
-    public StatusListCredential findOrCreateStatusList(String statusPurpose) {
-        log.info("Finding or creating status list for purpose: {}", statusPurpose);
-
-        // Try to find an existing suitable status list
-        return findSuitableStatusList(statusPurpose, StatusListCredential.CredentialStatus.AVAILABLE)
-                .orElseGet(() -> {
-                    log.info("No suitable status list found, generating a new one");
-                    return generateStatusListCredential(statusPurpose);
-                });
-    }
-
-    /**
-     * Find next available index in the status list using the configured index provider
-     *
-     * @param statusListId the ID of the status list
-     * @return the next available index, or -1 if the list is full
-     */
-    public long findNextAvailableIndex(String statusListId) {
-        Optional<Long> availableIndex = indexProvider.acquireIndex(statusListId, Map.of());
-        return availableIndex.orElse(-1L);
-    }
-
     // Add this method to StatusListCredentialService.java
 
     /**
@@ -279,35 +310,26 @@ public class StatusListCredentialService {
         }
     }
 
-    @Transactional
+    /**
+     * Reserves a position in the active status list and adds the matching {@code credentialStatus} entry.
+     * The reservation commits before the credential is signed. It is not covered by a surrounding
+     * transaction so that a failed issuance can never hand the same position to another credential.
+     */
     public void addCredentialStatus(JSONObject jsonObject, String statusPurpose) throws CertifyException {
         log.info("Adding credential status for status list integration");
 
-        // Assign next available index using database approach
-        StatusListCredential statusList = findOrCreateStatusList(statusPurpose);
-        long assignedIndex = findNextAvailableIndex(statusList.getId());
-
-        if (assignedIndex == -1) {
-            log.info("Current status list is full, creating a new one");
-            statusList = generateStatusListCredential(statusPurpose);
-            assignedIndex = findNextAvailableIndex(statusList.getId());
-
-            if (assignedIndex == -1) {
-                log.error("Error fetching available index from status list");
-                throw new CertifyException(ErrorConstants.STATUS_LIST_INDEX_UNAVAILABLE, "Error fetching available index from status list");
-            }
-        }
+        AllocatedPosition position = allocationService.allocate(statusPurpose);
 
         JSONObject credentialStatus = new JSONObject();
-            String statusId = domainUrl + "/v1/certify/credentials/status-list/" + statusList.getId();
-        credentialStatus.put("id", statusId + "#" + assignedIndex);
+        String statusId = domainUrl + "/v1/certify/credentials/status-list/" + position.statusListId();
+        credentialStatus.put("id", statusId + "#" + position.index());
         credentialStatus.put("type", "BitstringStatusListEntry");
         credentialStatus.put("statusPurpose", statusPurpose);
-        credentialStatus.put("statusListIndex", String.valueOf(assignedIndex));
+        credentialStatus.put("statusListIndex", String.valueOf(position.index()));
         credentialStatus.put("statusListCredential", statusId);
         jsonObject.put(VCDM2Constants.CREDENTIAL_STATUS, credentialStatus);
 
-        log.info("Successfully added credential status with index {} in status list {}", assignedIndex, statusList.getId());
+        log.info("Successfully added credential status with index {} in status list {}", position.index(), position.statusListId());
     }
 
     /**

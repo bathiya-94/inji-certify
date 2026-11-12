@@ -45,11 +45,12 @@ public final class BitStringStatusListUtils {
                 long index = entry.getKey();
                 boolean status = entry.getValue();
 
-                if (index >= 0 && index < actualCapacity) {
-                    bitstring.set((int) index, status);
-                } else {
-                    log.warn("Index {} is out of bounds for capacity {}", index, actualCapacity);
+                if (index < 0 || index >= actualCapacity) {
+                    // Never skip silently: an unrecorded revocation would leave a revoked credential valid.
+                    throw new CertifyException(ErrorConstants.INDEX_OUT_OF_BOUNDS,
+                            "Index " + index + " is out of bounds for capacity " + actualCapacity);
                 }
+                bitstring.set((int) index, status);
             }
             byte[] byteArray = convertBitstringToByteArray(bitstring, (int) actualCapacity);
             String encodedList = "u" + compressAndEncode(byteArray);

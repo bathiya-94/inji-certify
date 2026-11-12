@@ -224,7 +224,7 @@ CREATE TABLE certify.status_list_credential (
     vc_document VARCHAR NOT NULL,           -- Stores the entire Verifiable Credential JSON document.
     credential_type VARCHAR(100) NOT NULL, -- Type of the status list (e.g., 'StatusList2021Credential')
     status_purpose VARCHAR(100),             -- Intended purpose of this list within the system (e.g., 'revocation', 'suspension', 'general'). NULLABLE.
-    capacity BIGINT,                        --- length of status list
+    capacity_in_kb BIGINT,                        --- length of status list
     credential_status credential_status_enum, -- Use the created ENUM type here
     cr_dtimes timestamp NOT NULL default now(),
     upd_dtimes timestamp                    -- When this VC record was last updated in the system
@@ -257,11 +257,12 @@ CREATE TABLE certify.ledger (
 CREATE INDEX IF NOT EXISTS idx_ledger_credential_id ON certify.ledger(credential_id);
 CREATE INDEX IF NOT EXISTS idx_ledger_issuer_id ON certify.ledger(issuer_id);
 CREATE INDEX IF NOT EXISTS idx_ledger_credential_type ON certify.ledger(credential_type);
-CREATE INDEX IF NOT EXISTS idx_ledger_issuance_date ON certify.ledger(issuance_date);
+CREATE INDEX IF NOT EXISTS idx_ledger_issue_date ON certify.ledger(issuance_date);
 CREATE INDEX IF NOT EXISTS idx_ledger_expiration_date ON certify.ledger(expiration_date);
 CREATE INDEX IF NOT EXISTS idx_ledger_cr_dtimes ON certify.ledger(cr_dtimes);
 CREATE INDEX IF NOT EXISTS idx_gin_ledger_indexed_attrs ON certify.ledger USING GIN (indexed_attributes);
 CREATE INDEX IF NOT EXISTS idx_gin_ledger_status_details ON certify.ledger USING GIN (credential_status_details);
+CREATE INDEX IF NOT EXISTS idx_ledger_document_page ON certify.ledger (issuer_id, credential_type, (indexed_attributes->>'document_id'), id);
 
 CREATE TABLE IF NOT EXISTS certify.credential_status_transaction (
     transaction_log_id SERIAL PRIMARY KEY,        -- Unique ID for this transaction log entry
@@ -277,6 +278,14 @@ CREATE TABLE IF NOT EXISTS certify.credential_status_transaction (
 
 CREATE INDEX IF NOT EXISTS idx_cst_is_processed_created ON certify.credential_status_transaction (is_processed, cr_dtimes);
 
+CREATE UNIQUE INDEX IF NOT EXISTS uq_cst_true_revocation
+    ON certify.credential_status_transaction (status_list_credential_id, status_list_index, status_purpose)
+    WHERE status_value = TRUE AND status_purpose = 'revocation';
+
+CREATE INDEX IF NOT EXISTS idx_cst_pending_by_list
+    ON certify.credential_status_transaction (status_list_credential_id, cr_dtimes, transaction_log_id)
+    WHERE is_processed = FALSE;
+
 CREATE TABLE certify.status_list_available_indices (
     id SERIAL PRIMARY KEY,                         -- Serial primary key
     status_list_credential_id VARCHAR(255) NOT NULL, -- References status_list_credential.id
@@ -284,6 +293,8 @@ CREATE TABLE certify.status_list_available_indices (
     is_assigned BOOLEAN NOT NULL DEFAULT FALSE,   -- Flag indicating if this index has been assigned
     cr_dtimes TIMESTAMP NOT NULL DEFAULT NOW(),   -- Creation timestamp
     upd_dtimes TIMESTAMP,                          -- Update timestamp
+    issued_at TIMESTAMP,                           -- Set when a signed credential was returned for this position
+    credential_id VARCHAR(255),                    -- Credential that uses this position, set together with issued_at
 
     -- Foreign key constraint
     CONSTRAINT fk_status_list_credential
@@ -306,6 +317,30 @@ CREATE INDEX IF NOT EXISTS idx_sla_status_list_credential_id ON certify.status_l
 CREATE INDEX IF NOT EXISTS idx_sla_is_assigned ON certify.status_list_available_indices(is_assigned);
 CREATE INDEX IF NOT EXISTS idx_sla_list_index ON certify.status_list_available_indices(list_index);
 CREATE INDEX IF NOT EXISTS idx_sla_cr_dtimes ON certify.status_list_available_indices(cr_dtimes);
+
+CREATE TABLE IF NOT EXISTS certify.status_list_allocation (
+    status_list_credential_id VARCHAR(255) PRIMARY KEY,
+    issuer_id VARCHAR(255) NOT NULL,
+    status_purpose VARCHAR(100) NOT NULL,
+    physical_capacity BIGINT NOT NULL,
+    allocation_limit BIGINT NOT NULL,
+    allocated_count BIGINT NOT NULL DEFAULT 0,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    cr_dtimes TIMESTAMP NOT NULL DEFAULT NOW(),
+    upd_dtimes TIMESTAMP,
+    CONSTRAINT fk_sla_alloc_status_list
+        FOREIGN KEY (status_list_credential_id)
+        REFERENCES certify.status_list_credential(id)
+        ON DELETE CASCADE,
+    CONSTRAINT ck_sla_alloc_counts
+        CHECK (allocated_count >= 0
+               AND allocated_count <= allocation_limit
+               AND allocation_limit <= physical_capacity)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_status_list_allocation_active
+    ON certify.status_list_allocation (issuer_id, status_purpose)
+    WHERE is_active;
 
 CREATE TABLE IF NOT EXISTS certify.shedlock (
   name VARCHAR(64),

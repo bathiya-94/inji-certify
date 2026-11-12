@@ -17,6 +17,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.MessageSource;
 import org.springframework.context.NoSuchMessageException;
 import org.springframework.http.HttpHeaders;
+import io.mosip.certify.exception.ManagementApiException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
@@ -110,6 +111,15 @@ public class ExceptionHandlerAdvice extends ResponseEntityExceptionHandler imple
         if (ex instanceof CertifyException certifyException && "erl_datasource_unavailable".equals(certifyException.getErrorCode())) {
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(Map.of("error", "temporarily_unavailable"));
         }
+        if (ex instanceof ManagementApiException managementException) {
+            return ResponseEntity.status(managementException.getStatus()).header("Cache-Control", "no-store").body(Map.of(
+                    "error", managementException.getErrorCode(), "error_description", String.valueOf(managementException.getMessage())));
+        }
+        if (isManagementRoute(requestPath) && (ex instanceof MethodArgumentNotValidException
+                || ex instanceof HttpMessageNotReadableException || ex instanceof TypeMismatchException)) {
+            return ResponseEntity.badRequest().body(Map.of("error", INVALID_REQUEST,
+                    "error_description", describeBadRequest(ex)));
+        }
         log.error("Request failed: {}", ex.getClass().getSimpleName());
         String pathInfo = ((ServletWebRequest)request).getRequest().getPathInfo();
 
@@ -124,6 +134,24 @@ public class ExceptionHandlerAdvice extends ResponseEntityExceptionHandler imple
         return handleInternalControllerException(ex);
     }
 
+
+    /** The administrative and status list endpoints report malformed requests as 400 instead of the legacy 200 envelope. */
+    private static boolean isManagementRoute(String requestPath) {
+        return requestPath.contains("/ledger-search") || requestPath.contains("/credentials/status") || requestPath.contains("/credentials/v2/status");
+    }
+
+    private static String describeBadRequest(Exception ex) {
+        if (ex instanceof MethodArgumentNotValidException invalid && invalid.getBindingResult().getFieldError() != null) {
+            FieldError field = invalid.getBindingResult().getFieldError();
+            return field.getField() + ": " + field.getDefaultMessage();
+        }
+        if (ex instanceof HttpMessageNotReadableException unreadable && unreadable.getMostSpecificCause() != null
+                && unreadable.getMostSpecificCause().getMessage() != null
+                && unreadable.getMostSpecificCause().getMessage().contains("integer")) {
+            return "limit and offset must be integer numbers.";
+        }
+        return "The request body is missing, malformed or has a field of the wrong type.";
+    }
 
     private ResponseEntity<ResponseWrapper> handleInternalControllerException(Exception ex) {
         if(ex instanceof MethodArgumentNotValidException) {

@@ -17,6 +17,11 @@ public class ErlTemplateHelper implements CredentialTemplateCustomizer {
     }
     @Override
     public void customize(Map<String, Object> parameters) throws DataProviderExchangeException {
+        // The licence must be revocable: it needs its own id and the status list entry allocated for it.
+        Object credentialId = parameters.get("credentialId");
+        if (credentialId == null || credentialId.toString().isBlank()) throw new DataProviderExchangeException("erl_missing_credential_id");
+        if (!(parameters.get("credentialStatus") instanceof Map<?, ?> status) || status.isEmpty())
+            throw new DataProviderExchangeException("erl_missing_credential_status");
         Object validTo = parameters.get("validity_period_end_date");
         Instant expiry = expiration(validTo == null ? null : LocalDate.parse(validTo.toString()));
         parameters.put("validUntil", expiry.toString());
@@ -30,5 +35,6 @@ public class ErlTemplateHelper implements CredentialTemplateCustomizer {
             subject.put(field, value == null ? JSONObject.NULL : value);
         }
         parameters.put("erlCredentialSubject", subject.toString());
+        parameters.put("erlCredentialStatus", new JSONObject((Map<?, ?>) parameters.get("credentialStatus")).toString());
     }
 }

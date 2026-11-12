@@ -42,6 +42,12 @@ public class StatusListAvailableIndices {
     @Column(name = "upd_dtimes")
     private LocalDateTime updatedDtimes;
 
+    @Column(name = "issued_at")
+    private LocalDateTime issuedAt;
+
+    @Column(name = "credential_id", length = 255)
+    private String credentialId;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "status_list_credential_id",
             foreignKey = @ForeignKey(name = "fk_status_list_credential"),
@@ -50,7 +56,7 @@ public class StatusListAvailableIndices {
 
     @PrePersist
     protected void onCreate() {
-        createdDtimes = LocalDateTime.now();
+        createdDtimes = LocalDateTime.now(java.time.ZoneOffset.UTC);
         if (isAssigned == null) {
             isAssigned = false;
         }
@@ -58,6 +64,6 @@ public class StatusListAvailableIndices {
 
     @PreUpdate
     protected void onUpdate() {
-        updatedDtimes = LocalDateTime.now();
+        updatedDtimes = LocalDateTime.now(java.time.ZoneOffset.UTC);
     }
 }

@@ -44,11 +44,34 @@ class ErlDataProviderPluginTest {
         Map<String,Object> parameters = new HashMap<>(result.toMap());
         parameters.put("_holderId", "did:jwk:holder");
         parameters.put("validUntil", "2099-01-01T00:00:00Z");
+        parameters.put("credentialId", "urn:uuid:1111");
+        parameters.put("credentialStatus", Map.of("id", "https://c/status-list/L#7", "type", "BitstringStatusListEntry",
+            "statusPurpose", "revocation", "statusListIndex", "7", "statusListCredential", "https://c/status-list/L"));
         new ErlTemplateHelper(clock).customize(parameters);
+        JSONObject status = new JSONObject((String) parameters.get("erlCredentialStatus"));
+        assertThat(status.getString("statusListIndex")).isEqualTo("7");
+        assertThat(status.getString("statusPurpose")).isEqualTo("revocation");
+        assertThat(status.getString("statusListCredential")).isEqualTo("https://c/status-list/L");
         assertThat(parameters.get("validUntil")).isEqualTo("2026-12-31T18:30:00Z");
         JSONObject subject = new JSONObject((String) parameters.get("erlCredentialSubject"));
         assertThat(subject.getString("owner_name")).isEqualTo(row.getOwnerName());
         assertThat(subject.has("fines_paid") && subject.isNull("fines_paid")).isTrue();
+    }
+    @Test void refusesToIssueAnUnrevocableLicence() {
+        Map<String,Object> valid = new HashMap<>(Map.of("validity_period_end_date", "2026-12-31", "_holderId", "did:jwk:h",
+            "credentialId", "urn:uuid:1", "credentialStatus", Map.of("statusListIndex", "1")));
+        for (String missing : List.of("credentialId", "credentialStatus")) {
+            Map<String,Object> parameters = new HashMap<>(valid);
+            parameters.remove(missing);
+            assertThatThrownBy(() -> new ErlTemplateHelper(clock).customize(parameters))
+                .isInstanceOf(DataProviderExchangeException.class);
+        }
+        Map<String,Object> blankId = new HashMap<>(valid);
+        blankId.put("credentialId", " ");
+        assertThatThrownBy(() -> new ErlTemplateHelper(clock).customize(blankId)).isInstanceOf(DataProviderExchangeException.class);
+        Map<String,Object> emptyStatus = new HashMap<>(valid);
+        emptyStatus.put("credentialStatus", Map.of());
+        assertThatThrownBy(() -> new ErlTemplateHelper(clock).customize(emptyStatus)).isInstanceOf(DataProviderExchangeException.class);
     }
     @Test void enforcesExpiryAtColomboMidnight() throws Exception {
         LocalDate validTo = LocalDate.of(2026,10,19);

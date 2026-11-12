@@ -1,43 +1,49 @@
 package io.mosip.certify.services;
 
-import io.mosip.certify.core.constants.ErrorConstants;
-import io.mosip.certify.core.exception.CertifyException;
-import io.mosip.certify.entity.CredentialStatusTransaction;
-import io.mosip.certify.entity.StatusListCredential;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import io.mosip.certify.repository.CredentialStatusTransactionRepository;
-import io.mosip.certify.repository.StatusListCredentialRepository;
-import io.mosip.certify.utils.BitStringStatusListUtils;
+import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import net.javacrumbs.shedlock.core.LockAssert;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
-import org.json.JSONObject;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Clock;
+import java.time.Duration;
 import java.time.LocalDateTime;
-import java.util.*;
-import java.util.stream.Collectors;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 
 /**
- * Batch job service for updating Status List Credentials
- * Runs every minute(can be configured) to process new credential status transactions and update status lists
+ * Publishes pending revocations. Each run asks the publication service to handle one list at a time and keeps
+ * going while there is work, so a backlog is drained in one run.
+ * <p>
+ * Only one node runs the job per interval (ShedLock). The lease is shorter than the interval so a node that
+ * crashes mid-run costs at most one run; the per-list database lock in the publication service keeps two nodes
+ * from ever publishing the same list together, for example if a run outlasts its lease.
  */
 @Slf4j
 @Service
 public class StatusListUpdateBatchJob {
 
+    private static final int LISTS_PER_PASS = 100;
+    private static final int MAX_PASSES = 50;
+
     @Autowired
     private CredentialStatusTransactionRepository transactionRepository;
 
     @Autowired
-    private StatusListCredentialRepository statusListRepository;
+    private StatusListPublicationService publicationService;
 
-    @Autowired
-    private StatusListCredentialService statusListCredentialService;
+    @Autowired(required = false)
+    private MeterRegistry meterRegistry;
 
     @Value("${mosip.certify.batch.status-list-update.enabled:true}")
     private boolean batchJobEnabled;
@@ -45,170 +51,89 @@ public class StatusListUpdateBatchJob {
     @Value("${mosip.certify.batch.status-list-update.batch-size:1000}")
     private int batchSize;
 
-    /**
-     * Scheduled method that runs periodically (schedule controlled by cron expression property)
-     * to update status lists by processing new credential status transactions.
-     */
+    private Clock clock = Clock.systemUTC();
+    private Timer publicationTimer;
+    private Counter failureCounter;
+
+    @PostConstruct
+    void registerMetrics() {
+        if (meterRegistry == null) {
+            return;
+        }
+        Gauge.builder("certify.status_list.pending", transactionRepository, CredentialStatusTransactionRepository::countByIsProcessedFalse)
+                .description("Revocations accepted but not yet published").register(meterRegistry);
+        Gauge.builder("certify.status_list.oldest_pending_age_seconds", this, StatusListUpdateBatchJob::oldestPendingAgeSeconds)
+                .description("Age of the oldest unpublished revocation").register(meterRegistry);
+        publicationTimer = Timer.builder("certify.status_list.publication.duration")
+                .description("Time to publish one status list").register(meterRegistry);
+        failureCounter = Counter.builder("certify.status_list.publication.failures")
+                .description("Status list publications that failed").register(meterRegistry);
+    }
+
+    private double oldestPendingAgeSeconds() {
+        return transactionRepository.findOldestPendingTime()
+                .map(oldest -> (double) Duration.between(oldest, LocalDateTime.now(clock)).toSeconds())
+                .orElse(0.0);
+    }
+
+    void setClock(Clock clock) {
+        this.clock = clock;
+    }
+
     @Scheduled(cron = "${mosip.certify.batch.status-list-update.cron-expression:0 0/1 * * * *}")
     @SchedulerLock(
             name = "updateStatusLists",
-            lockAtMostFor = "${mosip.certify.batch.status-list-update.lock-at-most-for:50m}",
+            lockAtMostFor = "${mosip.certify.batch.status-list-update.lock-at-most-for:55s}",
             lockAtLeastFor = "${mosip.certify.batch.status-list-update.lock-at-least-for:50s}"
     )
     public void updateStatusLists() {
         LockAssert.assertLocked();
+        runOnce();
+    }
+
+    /** One run: publish every list that has pending changes. Package-visible so tests need not hold the lock. */
+    void runOnce() {
         if (!batchJobEnabled) {
             log.info("Status list update batch job is disabled");
             return;
         }
-
-        log.info("Starting status list update batch job");
-
-        try {
-            // Fetch a batch of unprocessed transactions
-            List<CredentialStatusTransaction> newTransactions = transactionRepository.findByIsProcessedFalseOrderByCreatedDtimesAsc(PageRequest.of(0, batchSize));
-
-            if (newTransactions.isEmpty()) {
-                log.info("No unprocessed transactions found");
-                return;
-            }
-
-            log.info("Found {} unprocessed transactions to process", newTransactions.size());
-
-            // Group transactions by status list credential ID
-            Map<String, List<CredentialStatusTransaction>> transactionsByStatusList = groupTransactionsByStatusList(newTransactions);
-
-            // Update each affected status list
-            int updatedLists = 0;
-            for (Map.Entry<String, List<CredentialStatusTransaction>> entry : transactionsByStatusList.entrySet()) {
-                String statusListId = entry.getKey();
-                List<CredentialStatusTransaction> transactions = entry.getValue();
-
+        // A list that failed, or that another node is publishing, is left alone for the rest of this run so the
+        // other lists make progress and there is no tight retry loop.
+        Set<String> skipped = new HashSet<>();
+        int published = 0;
+        for (int pass = 0; pass < MAX_PASSES; pass++) {
+            boolean progressed = false;
+            List<String> lists = transactionRepository.findListsWithPendingWork(LISTS_PER_PASS);
+            for (String listId : lists) {
+                if (skipped.contains(listId)) {
+                    continue;
+                }
                 try {
-                    updateStatusList(statusListId, transactions);
-                    updatedLists++;
-                    log.info("Successfully updated status list: {} and marked {} transactions as processed", statusListId, transactions.size());
+                    long started = System.nanoTime();
+                    int count = publicationService.publish(listId, batchSize);
+                    if (count > 0) {
+                        progressed = true;
+                        published += count;
+                        if (publicationTimer != null) {
+                            publicationTimer.record(Duration.ofNanos(System.nanoTime() - started));
+                        }
+                    } else {
+                        skipped.add(listId);
+                    }
                 } catch (Exception e) {
-                    log.error("Failed to update status list: {}", statusListId, e);
-                    // Continue processing other status lists even if one fails
+                    skipped.add(listId);
+                    if (failureCounter != null) {
+                        failureCounter.increment();
+                    }
+                    log.error("Failed to publish status list {}; its changes stay pending", listId, e);
                 }
             }
-
-            log.info("Status list update batch job completed successfully. Updated {} status lists", updatedLists);
-
-        } catch (Exception e) {
-            log.error("Error in status list update batch job", e);
-            throw new CertifyException(ErrorConstants.BATCH_JOB_EXECUTION_FAILED);
-        }
-    }
-
-    /**
-     * Group transactions by their status list credential ID
-     */
-    private Map<String, List<CredentialStatusTransaction>> groupTransactionsByStatusList(List<CredentialStatusTransaction> transactions) {
-
-        return transactions.stream()
-                .filter(t -> t.getStatusListCredentialId() != null)
-                .collect(Collectors.groupingBy(CredentialStatusTransaction::getStatusListCredentialId));
-    }
-
-    /**
-     * Update a specific status list with the given transactions
-     */
-    @Transactional
-    public void updateStatusList(String statusListId, List<CredentialStatusTransaction> transactions) {
-        log.info("Updating status list {} with {} transactions", statusListId, transactions.size());
-
-        try {
-            // Fetch the current status list credential
-            Optional<StatusListCredential> optionalStatusList = statusListRepository.findById(statusListId);
-
-            if (optionalStatusList.isEmpty()) {
-                log.error("Status list credential not found: {}", statusListId);
-                throw new CertifyException(ErrorConstants.STATUS_LIST_NOT_FOUND);
+            if (!progressed) {
+                break;
             }
-
-            StatusListCredential statusListCredential = optionalStatusList.get();
-
-            // Apply transaction updates to the status data
-            Map<Long, Boolean> updatedStatuses = getUpdatedStatus(transactions);
-
-            JSONObject vcDocument = new JSONObject(statusListCredential.getVcDocument());
-
-            // Generate new encoded list
-            String newEncodedList = BitStringStatusListUtils.updateEncodedList(vcDocument.getJSONObject("credentialSubject").getString("encodedList"),updatedStatuses, statusListCredential.getCapacityInKB());
-
-            // Update the status list credential with new encoded list
-            updateStatusListCredential(statusListCredential, newEncodedList);
-
-            // Mark transactions as processed
-            LocalDateTime processedTime = LocalDateTime.now();
-            for (CredentialStatusTransaction txn : transactions) {
-                txn.setProcessedTime(processedTime);
-                txn.setIsProcessed(true);
-            }
-            transactionRepository.saveAll(transactions);
-
-            log.info("Successfully updated status list credential: {}", statusListId);
-
-        } catch (Exception e) {
-            log.error("Error occurred while updating status list with ID: {}", statusListId, e);
-            throw new CertifyException(ErrorConstants.STATUS_LIST_UPDATE_FAILED, "Error occurred while updating status list with ID: " + statusListId);
         }
-    }
-
-    /** Returns a map of status list index to the latest status value, based on transaction creation time.
-     * If multiple transactions exist for the same index, the latest one (by createdDtimes) is used.
-     */
-    private Map<Long, Boolean> getUpdatedStatus(List<CredentialStatusTransaction> transactions) {
-        return transactions.stream()
-                .filter(t -> t.getStatusListIndex() != null)
-                .sorted(Comparator.comparing(CredentialStatusTransaction::getCreatedDtimes))
-                .collect(Collectors.toMap(
-                        CredentialStatusTransaction::getStatusListIndex,
-                        CredentialStatusTransaction::getStatusValue,
-                        (first, second) -> second,
-                        HashMap::new
-                ));
-    }
-
-
-    /**
-     * Update the status list credential with the new encoded list
-     */
-    @Transactional
-    public void updateStatusListCredential(StatusListCredential statusListCredential, String newEncodedList) {
-        try {
-            log.info("Starting update of StatusListCredential with ID: {}", statusListCredential.getId());
-
-            // Parse the current VC document
-            JSONObject vcDocument = new JSONObject(statusListCredential.getVcDocument());
-            log.info("Parsed VC document for StatusListCredential ID: {}", statusListCredential.getId());
-
-            // Update the encodedList in the credential subject
-            JSONObject credentialSubject = vcDocument.getJSONObject("credentialSubject");
-            credentialSubject.put("encodedList", newEncodedList);
-            log.info("Updated encodedList for StatusListCredential ID: {}", statusListCredential.getId());
-
-            // Update timestamps
-            String newValidFrom = new Date().toInstant().toString();
-            vcDocument.put("validFrom", newValidFrom);
-            log.info("Set new validFrom timestamp: {} for StatusListCredential ID: {}", newValidFrom, statusListCredential.getId());
-
-            // Re-sign the status list credential
-            String updatedVcDocument = statusListCredentialService.resignStatusListCredential(vcDocument.toString());
-            log.info("Re-signed VC document for StatusListCredential ID: {}", statusListCredential.getId());
-
-            // Update the database record
-            statusListCredential.setVcDocument(updatedVcDocument);
-            statusListCredential.setUpdatedDtimes(LocalDateTime.now());
-            statusListRepository.save(statusListCredential);
-
-            log.info("Successfully updated and saved StatusListCredential ID: {}", statusListCredential.getId());
-
-        } catch (Exception e) {
-            log.error("Error occurred while updating StatusListCredential with ID: {}", statusListCredential.getId(), e);
-            throw new CertifyException(ErrorConstants.STATUS_LIST_CREDENTIAL_UPDATE_FAILED, "Error occurred while updating StatusListCredential with ID: " + statusListCredential.getId());
+        if (published > 0) {
+            log.info("Status list update completed: {} change(s) published", published);
         }
     }
 }

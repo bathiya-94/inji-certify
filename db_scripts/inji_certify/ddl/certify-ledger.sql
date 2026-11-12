@@ -48,3 +48,6 @@ CREATE INDEX IF NOT EXISTS idx_ledger_expiration_date ON ledger(expiration_date)
 CREATE INDEX IF NOT EXISTS idx_ledger_cr_dtimes ON ledger(cr_dtimes);
 CREATE INDEX IF NOT EXISTS idx_gin_ledger_indexed_attrs ON ledger USING GIN (indexed_attributes);
 CREATE INDEX IF NOT EXISTS idx_gin_ledger_status_details ON ledger USING GIN (credential_status_details);
+-- Source document ID search (issuer, type, document_id) in ledger-row order, used for paginated admin search.
+CREATE INDEX IF NOT EXISTS idx_ledger_document_page
+    ON ledger (issuer_id, credential_type, (indexed_attributes->>'document_id'), id);

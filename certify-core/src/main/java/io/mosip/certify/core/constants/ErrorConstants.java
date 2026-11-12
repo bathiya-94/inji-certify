@@ -52,6 +52,17 @@ public class ErrorConstants {
     public static final String SEARCH_CREDENTIALS_FAILED = "search_credentials_failed";
     public static final String INVALID_SEARCH_CRITERIA = "invalid_search_criteria";
     public static final String LEDGER_ENTRY_FAILED = "ledger_entry_failed";
+    public static final String ISSUANCE_RECORD_FAILED = "issuance_record_failed";
+    public static final String INVALID_PROVIDER_DATA = "invalid_provider_data";
+    public static final String PAGINATION_REQUIRED = "pagination_required";
+    public static final String SEARCH_WINDOW_EXCEEDED = "search_window_exceeded";
+    public static final String STATUS_LIST_UNAVAILABLE = "status_list_unavailable";
+    public static final String REVOCATION_CANNOT_BE_UNDONE = "revocation_cannot_be_undone";
+    public static final String STATUS_PURPOSE_MISMATCH = "status_purpose_mismatch";
+    public static final String STATUS_PURPOSE_NOT_ALLOWED = "status_purpose_not_allowed";
+    public static final String AMBIGUOUS_STATUS_PURPOSE = "ambiguous_status_purpose";
+    public static final String CREDENTIAL_NOT_FOUND = "credential_not_found";
+    public static final String CREDENTIAL_NOT_ISSUED = "credential_not_issued";
     public static final String MISSING_CREDENTIAL_STATUS_DETAILS = "missing_credential_status_details";
     public static final String STATUS_ID_MISMATCH = "status_id_mismatch";
     public static final String JSON_PROCESSING_ERROR = "json_processing_error";

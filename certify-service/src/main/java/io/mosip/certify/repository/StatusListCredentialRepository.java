@@ -34,4 +34,11 @@ public interface StatusListCredentialRepository extends JpaRepository<StatusList
      */
     @Query("SELECT MAX(s.updatedDtimes) FROM StatusListCredential s WHERE s.updatedDtimes IS NOT NULL")
     Optional<LocalDateTime> findMaxUpdatedTime();
+
+    /**
+     * Locks one list for publication. Empty when another node holds the lock (or the list does not exist),
+     * so two nodes never publish the same list at the same time.
+     */
+    @Query(value = "SELECT * FROM status_list_credential WHERE id = :id FOR UPDATE SKIP LOCKED", nativeQuery = true)
+    Optional<StatusListCredential> lockForPublication(@Param("id") String id);
 }

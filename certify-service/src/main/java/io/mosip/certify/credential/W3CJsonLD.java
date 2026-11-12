@@ -8,7 +8,6 @@ package io.mosip.certify.credential;
 
 import java.net.URI;
 import java.time.LocalDateTime;
-import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
@@ -106,7 +105,7 @@ public class W3CJsonLD extends Credential{
                 .from(LocalDateTime
                         .parse(validFrom,
                                 DateTimeFormatter.ofPattern(Constants.UTC_DATETIME_PATTERN))
-                        .atZone(ZoneId.systemDefault()).toInstant());
+                        .atZone(ZoneOffset.UTC).toInstant());
 
         CertificateResponseDTO certificateResponseDTO = didDocumentUtil.getCertificateDataResponseDto(appID, refID);
         String kid = certificateResponseDTO.getKeyId();

@@ -10,5 +10,6 @@
 \ir ddl/certify-ledger.sql
 \ir ddl/certify-credential_status_transaction.sql
 \ir ddl/certify-status_list_available_indices.sql
+\ir ddl/certify-status_list_allocation.sql
 \ir ddl/certify-shedlock.sql
 \ir ddl/certify-iar_session.sql
